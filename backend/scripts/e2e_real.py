@@ -9,8 +9,11 @@
 from __future__ import annotations
 
 import json
+import os
+import socket
 import subprocess
 import sys
+import tempfile
 import time
 from pathlib import Path
 
@@ -42,20 +45,38 @@ def sse_events(resp: httpx.Response) -> list[dict]:
 
 
 def main() -> int:
+    with socket.socket() as probe:
+        try:
+            probe.bind(("127.0.0.1", PORT))
+        except OSError:
+            print("测试端口已占用，未启动测试或修改已有服务")
+            return 1
+    with tempfile.TemporaryDirectory(prefix="cpb-real-e2e-") as data_dir:
+        return run_isolated(data_dir)
+
+
+def run_isolated(data_dir) -> int:
+    env = {**os.environ, "DATA_DIR": data_dir, "INITIAL_ADMIN_PASSWORD": "admin"}
     proc = subprocess.Popen(
         [
-            str(REPO / ".venv" / "Scripts" / "python.exe"),
+            sys.executable,
             "-m", "uvicorn", "app.main:app",
             "--app-dir", str(REPO / "backend"),
+            "--host", "127.0.0.1",
             "--port", str(PORT),
             "--log-level", "warning",
         ],
         cwd=str(REPO / "backend"),
+        env=env,
+        creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
     )
-    time.sleep(5)
     try:
+        time.sleep(5)
+        if proc.poll() is not None:
+            print("测试子进程启动失败，未连接或修改已有服务")
+            return 1
         with httpx.Client(timeout=300) as c:
             r = c.get(f"{BASE}/api/auth/state")
             check("服务可达", r.status_code == 200)
@@ -127,7 +148,13 @@ def main() -> int:
                 f"free={r['disk']['free_gb']}GB",
             )
     finally:
-        proc.terminate()
+        if proc.poll() is None:
+            proc.terminate()
+        try:
+            proc.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait()
     print("\n结果：" + ("全部通过" if ok_all else "存在失败项"))
     return 0 if ok_all else 1
 
