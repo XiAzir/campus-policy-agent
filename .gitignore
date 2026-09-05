@@ -20,3 +20,4 @@ skill/work/
 work/
 *.zip
 测试文档/
+frontend/tsconfig.tsbuildinfo

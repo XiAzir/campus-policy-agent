@@ -66,7 +66,11 @@ class GeminiClient:
         tools: list[dict] | None = None,
         temperature: float = 0.2,
     ) -> AsyncIterator[dict]:
-        """流式调用，逐事件 yield：{"type":"text","text":…} | {"type":"parts","parts":[…]}（结束时的完整 parts）。"""
+        """流式调用，逐事件 yield：{"type":"text","text":…} | {"type":"parts","parts":[…]}（结束时的完整 parts）。
+
+        累积规则：文本按 part 索引拼接；functionCall 原样独立成 part。
+        绝不把 text 与 functionCall 合并进同一 part（oneof 约束，合并会被反代 400 拒绝）。
+        """
         payload: dict[str, Any] = {
             "contents": contents,
             "generationConfig": {"temperature": temperature},
@@ -75,7 +79,8 @@ class GeminiClient:
             payload["systemInstruction"] = {"parts": [{"text": system}]}
         if tools:
             payload["tools"] = tools
-        parts_acc: dict[int, dict] = {}
+        texts: dict[int, list[str]] = {}
+        calls: list[dict] = []
         try:
             async with self._client.stream(
                 "POST",
@@ -101,12 +106,20 @@ class GeminiClient:
                     except (KeyError, IndexError):
                         continue
                     for i, p in enumerate(cparts):
-                        parts_acc.setdefault(i, {}).update(p)
                         if "text" in p:
+                            texts.setdefault(i, []).append(p["text"])
                             yield {"type": "text", "text": p["text"]}
+                        elif "functionCall" in p:
+                            calls.append(p["functionCall"])
         except httpx.HTTPError as exc:
             raise LLMError(f"模型流式连接中断：{type(exc).__name__}") from exc
-        yield {"type": "parts", "parts": [parts_acc[i] for i in sorted(parts_acc)]}
+        parts: list[dict] = []
+        for i in sorted(texts):
+            joined = "".join(texts[i])
+            if joined:
+                parts.append({"text": joined})
+        parts.extend({"functionCall": c} for c in calls)
+        yield {"type": "parts", "parts": parts}
 
 
 async def embed_query(text: str, dims: int | None = None) -> np.ndarray:
