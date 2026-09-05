@@ -132,3 +132,27 @@ def test_storage_worker_yields_event_loop_and_rejects_overlap():
             release.set()
         assert await task == 42
     asyncio.run(run())
+
+
+def test_cancelled_storage_request_keeps_lock_until_worker_finishes():
+    async def run():
+        started, release = threading.Event(), threading.Event()
+        def slow():
+            started.set()
+            release.wait(3)
+        task = asyncio.create_task(api.storage_call(slow))
+        try:
+            while not started.is_set():
+                await asyncio.sleep(0.01)
+            task.cancel()
+            await asyncio.sleep(0.02)
+            assert api.storage_busy and not task.done()
+            with pytest.raises(Exception) as exc:
+                await api.storage_call(lambda: None)
+            assert exc.value.status_code == 409
+        finally:
+            release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert not api.storage_busy
+    asyncio.run(run())

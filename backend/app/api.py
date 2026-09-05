@@ -13,6 +13,7 @@ import tempfile
 import uuid
 from pathlib import Path
 
+import anyio
 import numpy as np
 from fastapi import APIRouter, File, Header, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, StreamingResponse
@@ -52,15 +53,33 @@ chats: ChatManager
 storage_busy = False
 
 
-async def storage_call(fn, *args):
+async def storage_operation(operation):
     global storage_busy
     if storage_busy:
         raise HTTPException(409, "已有资料处理任务，请稍后重试")
     storage_busy = True
+    task = asyncio.create_task(operation())
+    cancelled = False
     try:
-        return await run_in_threadpool(fn, *args)
+        # A cancelled HTTP request must not release paths/locks still used by a worker.
+        with anyio.CancelScope(shield=True):
+            while True:
+                try:
+                    result = await asyncio.shield(task)
+                    break
+                except asyncio.CancelledError:
+                    if task.done():
+                        raise
+                    cancelled = True
+            if cancelled:
+                raise asyncio.CancelledError
+            return result
     finally:
         storage_busy = False
+
+
+async def storage_call(fn, *args):
+    return await storage_operation(lambda: run_in_threadpool(fn, *args))
 
 
 # ---------- 鉴权 ----------
@@ -334,23 +353,21 @@ async def admin_upload(request: Request, file: UploadFile = File(...), authoriza
     require_admin_token(db, authorization)
     limiter.hit("pkgupload", rate_per_min=6, burst=5)
     max_bytes = config.max_package_mb * 1024 * 1024
-    with tempfile.NamedTemporaryFile(prefix="cpb-upload-", suffix=".zip", dir=config.data_dir.parent, delete=False) as tmp:
-        total = 0
-        while chunk := await file.read(1 << 20):
-            total += len(chunk)
-            if total > max_bytes:
-                tmp.close()
-                Path(tmp.name).unlink(missing_ok=True)
-                raise HTTPException(413, f"资料包超过单包上限 {config.max_package_mb}MB，请分包导入")
-            try:
-                require_space(config.data_dir.parent, len(chunk))
-                tmp.write(chunk)
-            except (ValueError, OSError) as exc:
-                tmp.close()
-                Path(tmp.name).unlink(missing_ok=True)
-                raise HTTPException(507, "磁盘空间不足") from exc
-        tmp_path = Path(tmp.name)
+    fd, name = tempfile.mkstemp(prefix="cpb-upload-", suffix=".zip", dir=config.data_dir.parent)
+    os.close(fd)
+    tmp_path = Path(name)
     try:
+        with tmp_path.open("wb") as tmp:
+            total = 0
+            while chunk := await file.read(1 << 20):
+                total += len(chunk)
+                if total > max_bytes:
+                    raise HTTPException(413, f"资料包超过单包上限 {config.max_package_mb}MB，请分包导入")
+                try:
+                    require_space(config.data_dir.parent, len(chunk))
+                    tmp.write(chunk)
+                except (ValueError, OSError) as exc:
+                    raise HTTPException(507, "磁盘空间不足") from exc
         package_id = await storage_call(ingest.import_package, db, tmp_path, file.filename or "package.zip")
     except ingest.IngestError as exc:
         raise HTTPException(400, str(exc)) from exc
@@ -417,7 +434,7 @@ async def admin_versions(doc_uid: str, authorization: str | None = Header(defaul
 async def admin_deactivate(doc_uid: str, authorization: str | None = Header(default=None)):
     require_admin_token(db, authorization)
     try:
-        ingest.deactivate_document(db, doc_uid)
+        await storage_call(ingest.deactivate_document, db, doc_uid)
     except ingest.IngestError as exc:
         raise HTTPException(400, str(exc)) from exc
     return {"ok": True}
@@ -427,7 +444,7 @@ async def admin_deactivate(doc_uid: str, authorization: str | None = Header(defa
 async def admin_enable(doc_uid: str, authorization: str | None = Header(default=None)):
     require_admin_token(db, authorization)
     try:
-        ingest.enable_document(db, doc_uid)
+        await storage_call(ingest.enable_document, db, doc_uid)
     except ingest.IngestError as exc:
         raise HTTPException(400, str(exc)) from exc
     return {"ok": True}
@@ -437,7 +454,7 @@ async def admin_enable(doc_uid: str, authorization: str | None = Header(default=
 async def admin_unlink(doc_uid: str, authorization: str | None = Header(default=None)):
     require_admin_token(db, authorization)
     try:
-        ingest.unlink_replacement(db, doc_uid)
+        await storage_call(ingest.unlink_replacement, db, doc_uid)
     except ingest.IngestError as exc:
         raise HTTPException(400, str(exc)) from exc
     return {"ok": True}
@@ -499,10 +516,12 @@ async def admin_backup(authorization: str | None = Header(default=None)):
     os.close(fd)
     out = Path(name)
     try:
-        await run_in_threadpool(backup_mod.create_backup, db, out)
-    except (ValueError, OSError) as exc:
+        await storage_call(backup_mod.create_backup, db, out)
+    except BaseException as exc:
         out.unlink(missing_ok=True)
-        raise HTTPException(400, "备份失败：资料不完整或磁盘空间不足") from exc
+        if isinstance(exc, (ValueError, OSError)):
+            raise HTTPException(400, "备份失败：资料不完整或磁盘空间不足") from exc
+        raise
     db.audit("admin", "backup_download")
 
     def _unlink_retry():
@@ -525,8 +544,12 @@ async def admin_backup(authorization: str | None = Header(default=None)):
 
 @router.post("/admin/restore")
 async def admin_restore(file: UploadFile = File(...), authorization: str | None = Header(default=None)):
-    global tokens
     require_admin_token(db, authorization)
+    return await storage_operation(lambda: _restore_upload(file))
+
+
+async def _restore_upload(file):
+    global tokens
     fd, name = tempfile.mkstemp(prefix="cpb-restore-upload-", suffix=".zip", dir=config.data_dir.parent)
     os.close(fd)
     uploaded = Path(name)
@@ -557,8 +580,15 @@ async def admin_restore(file: UploadFile = File(...), authorization: str | None 
         db.audit("admin", "backup_restore", f"docs={summary.get('documents')}")
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
+    except backup_mod.RestoreRollbackError as exc:
+        maintenance.failed = True
+        raise HTTPException(503, "恢复回滚失败，服务已锁定；请停止服务后按恢复故障步骤处理") from exc
+    except TimeoutError as exc:
+        raise HTTPException(409, "现有请求未及时结束，恢复未执行，请稍后重试") from exc
+    except OSError as exc:
+        raise HTTPException(400, "恢复失败，原资料库已保留；请检查磁盘空间和文件权限") from exc
     finally:
-        if owns_maintenance:
+        if owns_maintenance and not maintenance.failed:
             maintenance.restoring = False
         if entered:
             await run_in_threadpool(context.__exit__, None, None, None)

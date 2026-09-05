@@ -27,6 +27,15 @@ MAX_META = 16 * 1024**2
 HASH = re.compile(r"^[a-f0-9]{64}$")
 
 
+class RestoreRollbackError(RuntimeError):
+    """The live database cannot be trusted until an administrator recovers it."""
+
+
+def restore_marker():
+    current = config.data_dir.resolve()
+    return current.parent / f"{current.name}.restore-in-progress"
+
+
 def _snapshot_db(db_path, dest):
     with closing(sqlite3.connect(str(db_path))) as src:
         with closing(sqlite3.connect(str(dest))) as dst:
@@ -90,8 +99,11 @@ def _check_snapshot(root):
         if conn.execute("SELECT c.id FROM chunks c LEFT JOIN chunks_fts f ON f.rowid=c.id WHERE f.rowid IS NULL LIMIT 1").fetchone():
             raise ValueError("备份全文索引不完整")
         for pkg in conn.execute("SELECT * FROM packages"):
-            from .pkgfmt import validate_identity
-            validate_identity(dict(pkg))
+            from .pkgfmt import PackageError, validate_identity
+            try:
+                validate_identity(dict(pkg))
+            except PackageError as exc:
+                raise ValueError("备份向量模型、维度或预处理版本与当前配置不一致") from exc
             if hash_file(root / "packages" / f"{pkg['sha256']}.zip") != pkg["sha256"]:
                 raise ValueError("备份资料包哈希不匹配")
             name = f"pkg-{pkg['id']}" if pkg["status"] == "published" else f"pkg-draft-{pkg['sha256'][:16]}"
@@ -230,6 +242,8 @@ def install_backup(db, root, meta, close_caches=None):
     with db.files_lock:
         if close_caches:
             close_caches()
+        marker = restore_marker()
+        marker.write_text("Restore incomplete. Inspect rollback directories before restarting.\n", encoding="ascii")
         db.close()
         moved_old = False
         installed = False
@@ -250,9 +264,11 @@ def install_backup(db, root, meta, close_caches=None):
                 db.reopen()
             except BaseException as rollback_error:
                 # Never delete previous/failed when rollback itself fails.
-                raise RuntimeError("恢复回滚失败，旧数据目录已保留，请停止服务后人工恢复") from rollback_error
+                raise RestoreRollbackError("恢复回滚失败，旧数据目录已保留，请停止服务后人工恢复") from rollback_error
+            marker.unlink(missing_ok=True)
             if failed.exists():
                 remove_tree(current.parent, failed)
             raise
+    marker.unlink(missing_ok=True)
     remove_tree(current.parent, previous)
     return meta["counts"]

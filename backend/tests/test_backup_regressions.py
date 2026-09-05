@@ -136,8 +136,29 @@ def test_failed_rollback_preserves_original_directory(db, tmp_path, monkeypatch)
     preserved = list(config.data_dir.parent.glob("data.rollback-*"))
     assert len(preserved) == 1
     assert (preserved[0] / "files" / "proof.txt").read_text() == "original"
+    assert backup.restore_marker().exists()
     rename(preserved[0], config.data_dir)
     db.reopen()
+
+
+def test_restore_rejects_embedding_identity_mismatch(db, tmp_path, monkeypatch):
+    archive, _ = snapshot(db, tmp_path)
+    monkeypatch.setattr(config, "siliconflow_model", "another-model")
+    with pytest.raises(ValueError, match="当前配置"):
+        backup.restore_backup(db, archive)
+    assert db.one("SELECT COUNT(*) c FROM documents")["c"] == 5
+    assert not backup.restore_marker().exists()
+
+
+def test_incomplete_restore_blocks_startup(tmp_path):
+    from app.main import app, lifespan
+    backup.restore_marker().write_text("incomplete")
+    async def run():
+        with pytest.raises(RuntimeError, match="上次恢复未完成"):
+            async with lifespan(app):
+                pass
+    asyncio.run(run())
+    assert not (config.data_dir / "campus.db").exists()
 
 
 def test_backup_snapshot_does_not_depend_on_later_file_deletion(db, tmp_path, monkeypatch):

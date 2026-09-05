@@ -7,6 +7,7 @@ from starlette.responses import JSONResponse
 class Maintenance:
     def __init__(self):
         self.restoring = False
+        self.failed = False
         self.active = 0
 
     async def drain(self):
@@ -25,7 +26,8 @@ class MaintenanceMiddleware:
         if scope["type"] != "http" or not scope.get("path", "").startswith("/api/"):
             return await self.app(scope, receive, send)
         if maintenance.restoring:
-            response = JSONResponse({"detail": "资料库正在恢复，请稍后重试"}, status_code=503)
+            message = "资料恢复失败，服务已锁定，请联系管理员" if maintenance.failed else "资料库正在恢复，请稍后重试"
+            response = JSONResponse({"detail": message}, status_code=503)
             return await response(scope, receive, send)
         maintenance.active += 1
         try:

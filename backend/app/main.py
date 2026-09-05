@@ -10,6 +10,7 @@ from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from . import api
+from .backup import restore_marker
 from .agent import Agent
 from .chat import ChatManager
 from .config import REPO_ROOT, config, ensure_secrets
@@ -28,6 +29,8 @@ configure_logging()
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     ensure_secrets()
+    if restore_marker().exists():
+        raise RuntimeError("上次恢复未完成，请停止服务并检查恢复标记与回滚目录；禁止自动初始化资料库")
     db = Database(config.data_dir / "campus.db")
     init_admin(db)
     api.db = db

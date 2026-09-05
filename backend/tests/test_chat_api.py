@@ -324,3 +324,33 @@ def test_numeric_resource_metrics_require_admin(client):
     assert response.status_code == 200
     assert response.json()["rss_bytes"] > 0
     assert set(response.json()) == {"at", "rss_bytes", "cpu_s", "disk_free_bytes", "running", "waiting"}
+
+
+def test_failed_restore_rollback_keeps_service_locked(client, monkeypatch):
+    from app import backup
+    from app.maintenance import maintenance
+    ah = _admin_headers(client)
+    archive = client.get("/api/admin/backup", headers=ah)
+    def fail(*args):
+        raise backup.RestoreRollbackError("injected failure")
+    monkeypatch.setattr(backup, "install_backup", fail)
+    try:
+        response = client.post("/api/admin/restore", files={"file": ("backup.zip", archive.content)}, headers=ah)
+        assert response.status_code == 503
+        assert maintenance.restoring and maintenance.failed
+        assert client.get("/api/catalog").status_code == 503
+    finally:
+        maintenance.restoring = maintenance.failed = False
+
+
+def test_interrupted_upload_cleans_partial_file(client):
+    from app import api
+    from app.config import config
+    ah = _admin_headers(client)
+    class InterruptedFile:
+        filename = "interrupted.zip"
+        async def read(self, count):
+            raise asyncio.CancelledError
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(api.admin_upload(None, InterruptedFile(), ah["Authorization"]))
+    assert not list(config.data_dir.parent.glob("cpb-upload-*"))
