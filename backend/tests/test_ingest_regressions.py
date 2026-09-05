@@ -156,3 +156,25 @@ def test_cancelled_storage_request_keeps_lock_until_worker_finishes():
             await task
         assert not api.storage_busy
     asyncio.run(run())
+
+
+def test_catalog_reader_does_not_wait_for_uncommitted_publish(db):
+    async def run():
+        started, release = threading.Event(), threading.Event()
+        db.setting_set("proof", "committed")
+        def slow_transaction():
+            with db.tx() as conn:
+                conn.execute("UPDATE settings SET value='publishing' WHERE key='proof'")
+                assert db.setting_get("proof") == "publishing"
+                started.set()
+                release.wait(3)
+        task = asyncio.create_task(api.storage_call(slow_transaction))
+        try:
+            while not started.is_set():
+                await asyncio.sleep(0.01)
+            assert db.setting_get("proof") == "committed"
+        finally:
+            release.set()
+        await task
+        assert db.setting_get("proof") == "publishing"
+    asyncio.run(run())

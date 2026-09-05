@@ -11,6 +11,7 @@ import hashlib
 import hmac
 import json
 import secrets
+import threading
 import time
 
 from fastapi import Header, HTTPException, Request
@@ -74,19 +75,22 @@ class RateLimiter:
 
     def __init__(self):
         self._buckets: dict[str, tuple[float, float]] = {}
+        self._lock = threading.Lock()
 
     def hit(self, key: str, rate_per_min: float, burst: int, cost: float = 1.0) -> None:
-        now = time.monotonic()
-        tokens, last = self._buckets.get(key, (float(burst), now))
-        tokens = min(float(burst), tokens + (now - last) * rate_per_min / 60)
-        if tokens < cost:
-            self._buckets[key] = (tokens, now)
-            raise HTTPException(status_code=429, detail="请求过于频繁，请稍后再试")
-        self._buckets[key] = (tokens - cost, now)
+        with self._lock:
+            now = time.monotonic()
+            tokens, last = self._buckets.get(key, (float(burst), now))
+            tokens = min(float(burst), tokens + (now - last) * rate_per_min / 60)
+            if tokens < cost:
+                self._buckets[key] = (tokens, now)
+                raise HTTPException(status_code=429, detail="请求过于频繁，请稍后再试")
+            self._buckets[key] = (tokens - cost, now)
 
     def cleanup(self, max_keys: int = 10000) -> None:
-        if len(self._buckets) > max_keys:
-            self._buckets.clear()
+        with self._lock:
+            if len(self._buckets) > max_keys:
+                self._buckets.clear()
 
 
 limiter = RateLimiter()

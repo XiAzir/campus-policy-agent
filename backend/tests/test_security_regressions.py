@@ -81,3 +81,16 @@ def test_proxy_trust_boundary():
                 "headers": [(b"x-forwarded-for", b"203.0.113.9")]}, None, None)
     asyncio.run(run())
     assert received == ["198.51.100.10", "203.0.113.9"]
+
+
+def test_threaded_login_bucket_is_atomic():
+    from concurrent.futures import ThreadPoolExecutor
+    limiter = RateLimiter()
+    def attempt(_):
+        try:
+            limiter.hit("same-ip", 0, 10)
+            return True
+        except HTTPException:
+            return False
+    with ThreadPoolExecutor(max_workers=20) as pool:
+        assert sum(pool.map(attempt, range(100))) == 10

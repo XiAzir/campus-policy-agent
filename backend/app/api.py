@@ -98,7 +98,7 @@ class PasswordBody(BaseModel):
 
 
 @router.post("/auth/login")
-async def login(body: LoginBody, request: Request):
+def login(body: LoginBody, request: Request):
     limiter.hit(f"login:{client_ip(request)}", rate_per_min=2, burst=10)
     stored = db.setting_get("access_code_hash")
     if stored is None:
@@ -111,7 +111,7 @@ async def login(body: LoginBody, request: Request):
 
 
 @router.post("/auth/admin/login")
-async def admin_login(body: AdminLoginBody, request: Request):
+def admin_login(body: AdminLoginBody, request: Request):
     limiter.hit(f"adminlogin:{client_ip(request)}", rate_per_min=2, burst=10)
     stored = db.setting_get("admin_password_hash")
     if not verify_password(body.password, stored or ""):
@@ -122,7 +122,7 @@ async def admin_login(body: AdminLoginBody, request: Request):
 
 
 @router.post("/auth/admin/password")
-async def admin_reset_password(body: PasswordBody, authorization: str | None = Header(default=None)):
+def admin_reset_password(body: PasswordBody, authorization: str | None = Header(default=None)):
     require_admin_token(db, authorization)
     stored = db.setting_get("admin_password_hash")
     if not verify_password(body.old_password, stored or ""):
@@ -467,7 +467,7 @@ class AccessCodeBody(BaseModel):
 
 
 @router.put("/admin/access-code")
-async def admin_set_access_code(body: AccessCodeBody, authorization: str | None = Header(default=None)):
+def admin_set_access_code(body: AccessCodeBody, authorization: str | None = Header(default=None)):
     require_admin_token(db, authorization)
     db.setting_set("access_code_hash", hash_password(body.code))
     db.audit("admin", "access_code_changed", "旧访问码立即失效；已登录用户不受影响")

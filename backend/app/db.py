@@ -116,6 +116,8 @@ class Database:
     def __init__(self, path: Path):
         self.files_lock = threading.RLock()
         self.sql_lock = threading.RLock()
+        self.read_lock = threading.RLock()
+        self._transaction = threading.local()
         self.path = path
         path.parent.mkdir(parents=True, exist_ok=True)
         self._conn = sqlite3.connect(str(path), check_same_thread=False)
@@ -127,25 +129,39 @@ class Database:
         if "audience_scope" not in {r[1] for r in self._conn.execute("PRAGMA table_info(documents)")}:
             self._conn.execute("ALTER TABLE documents ADD COLUMN audience_scope TEXT NOT NULL DEFAULT '{}'")
         self._conn.commit()
+        self._open_reader()
+
+    def _open_reader(self):
+        self._reader = sqlite3.connect(self.path.resolve().as_uri() + "?mode=ro", uri=True, check_same_thread=False)
+        self._reader.row_factory = sqlite3.Row
 
     @contextmanager
     def tx(self):
         """写事务；异常自动回滚。"""
         with self.sql_lock:
+            previous = getattr(self._transaction, "active", False)
+            self._transaction.active = True
             try:
                 yield self._conn
                 self._conn.commit()
-            except Exception:
+            except BaseException:
                 self._conn.rollback()
                 raise
+            finally:
+                self._transaction.active = previous
 
     def q(self, sql: str, params: tuple = ()) -> list[sqlite3.Row]:
-        with self.sql_lock:
+        if getattr(self._transaction, "active", False):
             return self._conn.execute(sql, params).fetchall()
+        # WAL readers keep serving the committed catalog while publishing writes.
+        with self.read_lock:
+            return self._reader.execute(sql, params).fetchall()
 
     def one(self, sql: str, params: tuple = ()) -> sqlite3.Row | None:
-        with self.sql_lock:
+        if getattr(self._transaction, "active", False):
             return self._conn.execute(sql, params).fetchone()
+        with self.read_lock:
+            return self._reader.execute(sql, params).fetchone()
 
     def setting_get(self, key: str) -> str | None:
         row = self.one("SELECT value FROM settings WHERE key=?", (key,))
@@ -168,6 +184,7 @@ class Database:
             )
 
     def close(self) -> None:
+        self._reader.close()
         self._conn.close()
 
     def reopen(self) -> None:
@@ -177,6 +194,7 @@ class Database:
         self._conn.execute("PRAGMA journal_mode=WAL")
         self._conn.execute("PRAGMA foreign_keys=ON")
         self._conn.execute("PRAGMA synchronous=NORMAL")
+        self._open_reader()
 
     @property
     def conn(self) -> sqlite3.Connection:
