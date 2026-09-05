@@ -12,6 +12,7 @@ from __future__ import annotations
 import json
 import re
 import uuid
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Awaitable, Callable
@@ -25,6 +26,7 @@ from .llm import GeminiClient, LLMError, embed_query
 from .retrieval import allowed_doc_ids, page_for_line, read_lines, search
 from .vectors import VectorIndex
 from .audience import match_audience
+from .metrics import current_metrics
 
 Emitter = Callable[[dict], Awaitable[None]]
 
@@ -174,10 +176,13 @@ class Agent:
             row = self.db.one("SELECT * FROM documents WHERE id=?", (doc_id,))
             _, missing = match_audience(row, scope.profile)
             scope.clarification.update(missing)
+        started = time.monotonic()
         qvec = await embed_query(query)
         # Re-evaluate after the network await: an administrator may have disabled a file.
         allowed = self.allowed(scope, domains=domains)
         hits = search(self.db, self.vectors, query, qvec, allowed, top_k=8, domains=domains)
+        if metrics := current_metrics.get():
+            metrics.retrieval_s += time.monotonic() - started
         out = []
         for h in hits:
             eid = f"EV{len(evidence) + 1}"

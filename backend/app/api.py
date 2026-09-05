@@ -29,6 +29,7 @@ from .db import Database, utcnow
 from .retrieval import allowed_doc_ids
 from .maintenance import maintenance
 from .storage import require_space
+from .metrics import TurnMetrics, current_metrics
 from .security import (
     RateLimiter,
     Tokens,
@@ -252,13 +253,13 @@ async def chat(body: ChatBody, request: Request, x_client_id: str | None = Heade
     }
 
     async def runner(job) -> None:
-        result = await agent.run(
-            history,
-            body.question,
-            turn_scope,
-            profile,
-            emit=lambda ev: job.queue.put(ev),
-        )
+        metrics = TurnMetrics()
+        metric_token = current_metrics.set(metrics)
+        try:
+            result = await agent.run(history, body.question, turn_scope, profile, emit=lambda ev: job.queue.put(ev))
+        finally:
+            await job.queue.put({"event": "metrics", **metrics.public()})
+            current_metrics.reset(metric_token)
         if result["expand_request"]:
             return
         text = result["text"]
@@ -475,6 +476,18 @@ async def admin_status(authorization: str | None = Header(default=None)):
         },
         "data_dir_mb": round(sum(f.stat().st_size for f in config.data_dir.rglob("*") if f.is_file()) / 1e6, 1),
     }
+
+
+@router.get("/admin/metrics")
+async def admin_metrics(authorization: str | None = Header(default=None)):
+    require_admin_token(db, authorization)
+    import psutil
+    process = psutil.Process()
+    memory = process.memory_info()
+    cpu = process.cpu_times()
+    disk = shutil.disk_usage(config.data_dir)
+    return {"at": utcnow(), "rss_bytes": memory.rss, "cpu_s": cpu.user + cpu.system,
+        "disk_free_bytes": disk.free, "running": int(chats._running is not None), "waiting": len(chats._waiting)}
 
 
 # ---------- 备份与恢复 ----------

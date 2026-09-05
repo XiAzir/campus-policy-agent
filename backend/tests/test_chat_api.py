@@ -222,6 +222,7 @@ def test_full_flow(client, real_package_bytes, tmp_path):
             if line.startswith("data: "):
                 events.append(json.loads(line[6:]))
     kinds = [e["event"] for e in events]
+    assert "metrics" in kinds
     assert "retrieving" in kinds and "generating" in kinds
     done = next(e for e in events if e["event"] == "done")
     assert "[[EV99]]" not in done["text"]
@@ -315,3 +316,11 @@ def test_body_limit_rejects_declared_and_streamed_oversize(client):
     assert client.post("/api/chat", content=b"{}", headers={"Content-Length": "999999999"}).status_code == 413
     data = json.dumps({"code": "x" * (300 * 1024)}).encode()
     assert client.post("/api/auth/login", content=iter([data]), headers={"Content-Type": "application/json"}).status_code == 413
+
+
+def test_numeric_resource_metrics_require_admin(client):
+    assert client.get("/api/admin/metrics").status_code == 401
+    response = client.get("/api/admin/metrics", headers=_admin_headers(client))
+    assert response.status_code == 200
+    assert response.json()["rss_bytes"] > 0
+    assert set(response.json()) == {"at", "rss_bytes", "cpu_s", "disk_free_bytes", "running", "waiting"}

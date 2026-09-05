@@ -16,6 +16,7 @@ import httpx
 import numpy as np
 
 from .config import config
+from .metrics import current_metrics, call_started, model_usage
 
 
 class LLMError(Exception):
@@ -49,13 +50,16 @@ class GeminiClient:
         if tools:
             payload["tools"] = tools
         try:
+            call_started("model")
             r = await self._client.post(self._url("generateContent"), headers={"x-goog-api-key": config.gemini_api_key}, json=payload)
         except httpx.HTTPError as exc:
             raise LLMError(f"模型服务不可达：{type(exc).__name__}") from exc
         if r.status_code != 200:
             raise LLMError(f"模型调用失败 HTTP {r.status_code}")
         try:
-            return r.json()["candidates"][0]["content"]["parts"]
+            result = r.json()
+            model_usage(result.get("usageMetadata"))
+            return result["candidates"][0]["content"]["parts"]
         except (KeyError, IndexError) as exc:
             raise LLMError("模型响应结构异常") from exc
 
@@ -81,7 +85,9 @@ class GeminiClient:
             payload["tools"] = tools
         texts: dict[int, list[str]] = {}
         calls: list[dict] = []
+        usage = None
         try:
+            call_started("model")
             async with self._client.stream(
                 "POST",
                 self._url("streamGenerateContent"),
@@ -101,6 +107,7 @@ class GeminiClient:
                         obj = json.loads(data)
                     except json.JSONDecodeError:
                         continue
+                    usage = obj.get("usageMetadata", usage)
                     try:
                         cparts = obj["candidates"][0]["content"]["parts"]
                     except (KeyError, IndexError):
@@ -119,6 +126,7 @@ class GeminiClient:
             if joined:
                 parts.append({"text": joined})
         parts.extend({"functionCall": c} for c in calls)
+        model_usage(usage)
         yield {"type": "parts", "parts": parts}
 
 
@@ -130,6 +138,7 @@ async def embed_query(text: str, dims: int | None = None) -> np.ndarray:
     payload["dimensions"] = dims
     async with httpx.AsyncClient(timeout=60) as client:
         try:
+            call_started("embedding")
             r = await client.post(
                 "https://api.siliconflow.cn/v1/embeddings",
                 headers={"Authorization": f"Bearer {config.siliconflow_api_key}"},
@@ -139,7 +148,12 @@ async def embed_query(text: str, dims: int | None = None) -> np.ndarray:
             raise LLMError(f"向量化服务不可达：{type(exc).__name__}") from exc
     if r.status_code != 200:
         raise LLMError(f"向量化失败 HTTP {r.status_code}")
-    vec = np.asarray(r.json()["data"][0]["embedding"], dtype=np.float32)
+    result = r.json()
+    metrics = current_metrics.get()
+    if metrics and result.get("usage"):
+        metrics.embedding_usage_reported = True
+        metrics.embedding_tokens += int(result["usage"].get("total_tokens", 0))
+    vec = np.asarray(result["data"][0]["embedding"], dtype=np.float32)
     if vec.shape[0] != dims:
         raise LLMError(f"向量化返回维度 {vec.shape[0]} 与配置 {dims} 不一致")
     n = float(np.linalg.norm(vec))

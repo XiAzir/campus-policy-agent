@@ -1,114 +1,150 @@
-"""并发压测脚本（plan 第五节第 4 条）：记录排队时间、总耗时与引用数，采样服务器状态。
-
-在部署后的服务器上运行：
-  .venv/bin/python backend/scripts/load_test.py --port 8000 --code <访问码> --concurrency 10 --admin-token <管理令牌>
-
-行为：N 个会话同时发起问答（线程并发），逐请求记录提交→启动（排队）与提交→完成；
-并发 1 + 队列 10 时，第 12 个请求应被 429 拒绝。输出 CSV 与摘要。密钥不打印。
-"""
+"""Live SSE load test. Records numeric telemetry only; never response text."""
 
 from __future__ import annotations
 
 import argparse
 import csv
+import getpass
 import json
+import os
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from pathlib import Path
 
 import httpx
 
+FIELDS = ["req", "queued_s", "total_s", "rejected", "done", "citations", "note", "retrieval_s",
+    "model_calls", "embedding_calls", "prompt_tokens", "output_tokens", "thought_tokens", "embedding_tokens",
+    "model_usage_reported", "embedding_usage_reported"]
 
-def run_one(base: str, token: str, question: str, idx: int) -> dict:
-    row = {"req": idx, "queued_s": "", "total_s": "", "rejected": False, "done": False, "citations": 0, "note": ""}
-    t_submit = time.monotonic()
-    try:
-        with httpx.Client(timeout=600) as c:
-            r = c.post(
-                f"{base}/api/chat",
-                headers={"Authorization": f"Bearer {token}"},
-                json={"question": question, "messages": [], "scope": {"mode": "auto"}, "profile": {}},
-            )
-        if r.status_code == 429:
-            row["rejected"] = True
-            row["note"] = r.json().get("detail", "")[:80]
-            return row
-        if r.status_code != 200:
-            row["note"] = f"HTTP {r.status_code}"
-            return row
-        events = []
-        for line in r.text.splitlines():
-            if line.startswith("data: "):
-                try:
-                    events.append(json.loads(line[6:]))
-                except json.JSONDecodeError:
-                    pass
-        started = next((e for e in events if e["event"] == "started"), None)
-        if started:
-            row["queued_s"] = round(time.monotonic() - t_submit, 2)
-        cit = next((e for e in events if e["event"] == "citations"), None)
-        if cit:
-            row["citations"] = len(cit["citations"])
-        row["done"] = any(e["event"] == "done" for e in events)
-        row["total_s"] = round(time.monotonic() - t_submit, 2)
-    except Exception as exc:  # noqa: BLE001
-        row["note"] = f"{type(exc).__name__}: {exc}"[:120]
+
+def prepare_tokens(client, base, code, count, sleep=time.sleep):
+    tokens = []
+    for _ in range(count):
+        for attempt in range(6):
+            response = client.post(f"{base}/api/auth/login", json={"code": code})
+            if response.status_code == 200:
+                tokens.append(response.json()["token"])
+                break
+            if response.status_code != 429:
+                raise RuntimeError(f"准备会话失败 HTTP {response.status_code}")
+            if attempt == 5:
+                raise RuntimeError("准备会话持续被限流，测试尚未开始")
+            sleep(31)
+    return tokens
+
+
+def run_one(base, token, question, idx, barrier=None, client_factory=httpx.Client):
+    row = {key: "" for key in FIELDS}
+    row.update(req=idx, rejected=False, done=False, citations=0, note="")
+    with client_factory(timeout=2400) as client:
+        if barrier:
+            barrier.wait(timeout=60)
+        started_at = time.monotonic()
+        try:
+            with client.stream("POST", f"{base}/api/chat", headers={"Authorization": f"Bearer {token}"},
+                    json={"question": question, "messages": [], "scope": {"mode": "auto"}, "profile": {}}) as response:
+                if response.status_code != 200:
+                    row["rejected"] = response.status_code == 429
+                    row["note"] = f"HTTP {response.status_code}"
+                else:
+                    for line in response.iter_lines():
+                        if not line.startswith("data:"):
+                            continue
+                        event = json.loads(line[5:].strip())
+                        kind = event.get("event")
+                        if kind == "started" and row["queued_s"] == "":
+                            row["queued_s"] = round(time.monotonic() - started_at, 4)
+                        elif kind == "citations":
+                            row["citations"] = len(event["citations"])
+                        elif kind == "metrics":
+                            for key in FIELDS[7:]:
+                                value = event.get(key)
+                                if isinstance(value, (int, float, bool)):
+                                    row[key] = value
+                        elif kind == "done":
+                            row["done"] = True
+                        elif kind in ("error", "expand_request"):
+                            row["note"] = kind
+        except (httpx.HTTPError, ValueError) as exc:
+            row["note"] = type(exc).__name__
+        row["total_s"] = round(time.monotonic() - started_at, 4)
     return row
 
 
-def main() -> int:
-    p = argparse.ArgumentParser()
-    p.add_argument("--port", type=int, default=8000)
-    p.add_argument("--code", required=True, help="访问码")
-    p.add_argument("--count", type=int, default=11, help="同时到达的请求数（并发1+队列10 时取 11）")
-    p.add_argument("--question", default="旷课或迟到会受到什么处分？")
-    p.add_argument("--admin-token", default="", help="可选：采样 /api/admin/status")
-    args = p.parse_args()
+def sample_resources(base, token, stop, rows, errors, interval=0.5):
+    with httpx.Client(timeout=5) as client:
+        while not stop.is_set():
+            try:
+                response = client.get(f"{base}/api/admin/metrics", headers={"Authorization": f"Bearer {token}"})
+                response.raise_for_status()
+                rows.append(response.json())
+            except (httpx.HTTPError, ValueError) as exc:
+                errors.append(type(exc).__name__)
+            stop.wait(interval)
 
+
+def write_csv(path, fields, rows):
+    with Path(path).open("w", newline="", encoding="utf-8") as output:
+        writer = csv.DictWriter(output, fieldnames=fields, extrasaction="ignore")
+        writer.writeheader()
+        writer.writerows(rows)
+
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--port", type=int, default=8000)
+    parser.add_argument("--code", default=os.environ.get("LOAD_TEST_ACCESS_CODE", ""))
+    parser.add_argument("--admin-token", default=os.environ.get("LOAD_TEST_ADMIN_TOKEN", ""))
+    parser.add_argument("--count", "--concurrency", type=int, default=11)
+    parser.add_argument("--expected-rejections", type=int, default=0)
+    parser.add_argument("--question", default="旷课或迟到会受到什么处分？")
+    parser.add_argument("--output", default="load_test_result.csv")
+    args = parser.parse_args()
+    if not 1 <= args.count <= 80:
+        parser.error("count 必须在 1..80")
+    code = args.code or getpass.getpass("访问码：")
+    admin_token = args.admin_token or getpass.getpass("管理员令牌（资源采样）：")
+    if not admin_token:
+        parser.error("容量验收必须提供管理员令牌进行资源采样")
     base = f"http://127.0.0.1:{args.port}"
-    tokens = []
-    with httpx.Client(timeout=60) as c:
-        for _ in range(args.count):
-            r = c.post(f"{base}/api/auth/login", json={"code": args.code})
-            if r.status_code != 200:
-                print("登录失败：", r.text[:200])
-                return 1
-            tokens.append(r.json()["token"])
-
-    rows = []
-    with ThreadPoolExecutor(max_workers=args.count) as pool:
-        futures = [pool.submit(run_one, base, tok, args.question, i) for i, tok in enumerate(tokens)]
-        for fut in as_completed(futures):
-            row = fut.result()
-            rows.append(row)
-            tag = "429 拒绝" if row["rejected"] else f"排队 {row['queued_s']}s 总 {row['total_s']}s 引用 {row['citations']}"
-            print(f"[{row['req']}] {tag} {row['note']}")
-
-    rows.sort(key=lambda r: r["req"])
-    rejected = sum(1 for r in rows if r["rejected"])
-    done = sum(1 for r in rows if r["done"])
-    totals = [r["total_s"] for r in rows if isinstance(r["total_s"], float)]
-    print(
-        f"\n摘要：{args.count} 并发 → 完成 {done}，拒绝 {rejected}，"
-        f"总耗时 max={max(totals) if totals else 0:.1f}s min={min(totals) if totals else 0:.1f}s"
-    )
-
-    if args.admin_token:
-        try:
-            with httpx.Client(timeout=30) as c:
-                st = c.get(
-                    f"{base}/api/admin/status", headers={"Authorization": f"Bearer {args.admin_token}"}
-                ).json()
-            print("服务器状态：", json.dumps(st, ensure_ascii=False))
-        except Exception as exc:  # noqa: BLE001
-            print("状态采样失败：", exc)
-
-    out = "load_test_result.csv"
-    with open(out, "w", newline="", encoding="utf-8") as f:
-        w = csv.DictWriter(f, fieldnames=["req", "queued_s", "total_s", "rejected", "done", "citations", "note"])
-        w.writeheader()
-        w.writerows(rows)
-    print(f"明细已写入 {out}")
-    return 0
+    try:
+        with httpx.Client(timeout=60) as client:
+            if client.get(f"{base}/api/admin/metrics", headers={"Authorization": f"Bearer {admin_token}"}).status_code != 200:
+                raise RuntimeError("资源采样鉴权失败，测试尚未开始")
+            tokens = prepare_tokens(client, base, code, args.count)
+    except (httpx.HTTPError, RuntimeError) as exc:
+        print(type(exc).__name__, "会话准备失败，未执行压测")
+        return 1
+    rows, samples, errors = [], [], []
+    stop, barrier = threading.Event(), threading.Barrier(args.count)
+    sampler = threading.Thread(target=sample_resources, args=(base, admin_token, stop, samples, errors), daemon=True)
+    sampler.start()
+    try:
+        with ThreadPoolExecutor(max_workers=args.count) as pool:
+            futures = [pool.submit(run_one, base, token, args.question, i, barrier) for i, token in enumerate(tokens)]
+            for future in as_completed(futures):
+                row = future.result()
+                rows.append(row)
+                print(f"[{row['req']}] 排队={row['queued_s']}s 总耗时={row['total_s']}s 完成={row['done']} 拒绝={row['rejected']}")
+    finally:
+        stop.set()
+        sampler.join(timeout=10)
+    rows.sort(key=lambda row: row["req"])
+    output = Path(args.output)
+    write_csv(output, FIELDS, rows)
+    write_csv(output.with_suffix(".resources.csv"), ["at", "rss_bytes", "cpu_s", "disk_free_bytes", "running", "waiting"], samples)
+    rejected = sum(row["rejected"] for row in rows)
+    completed = sum(row["done"] for row in rows)
+    peak_mb = max((row["rss_bytes"] / 1024**2 for row in samples), default=0)
+    usage_missing = any(not row["model_usage_reported"] or not row["embedding_usage_reported"] for row in rows if row["done"])
+    summary = {"count": args.count, "completed": completed, "rejected": rejected, "peak_rss_mb": peak_mb,
+        "samples": len(samples), "sampling_errors": len(errors), "usage_missing": usage_missing,
+        "note": "token 数来自上游返回；缺失时不推算。费用须按实际账单核对。"}
+    output.with_suffix(".summary.json").write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
+    print(json.dumps(summary, ensure_ascii=False))
+    return int(not samples or bool(errors) or usage_missing or peak_mb >= 700 or rejected != args.expected_rejections or completed + rejected != args.count)
 
 
 if __name__ == "__main__":

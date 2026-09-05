@@ -14,7 +14,7 @@ echo "== 2. 虚拟环境与依赖（服务器不需要 pymupdf/python-docx，只
 cd "$APP_DIR"
 [ -d .venv ] || python3 -m venv .venv
 .venv/bin/pip install -q --upgrade pip
-.venv/bin/pip install -q fastapi 'uvicorn[standard]' httpx numpy jieba pydantic python-multipart langgraph langchain-core python-dotenv
+.venv/bin/pip install -q fastapi 'uvicorn[standard]' httpx numpy jieba pydantic python-multipart langgraph langchain-core python-dotenv psutil
 
 echo "== 3. 环境文件（密钥）=="
 if [ ! -f "$BACKEND/.env" ]; then

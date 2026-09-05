@@ -54,6 +54,7 @@ export interface UserPrefs {
 }
 
 export type ChatEvent =
+  | { event: "metrics"; retrieval_s: number; model_calls: number; embedding_calls: number }
   | { event: "queued"; position: number; request_id: string }
   | { event: "started"; request_id: string }
   | { event: "retrieving" }
