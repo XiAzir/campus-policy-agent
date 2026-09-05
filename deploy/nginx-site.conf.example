@@ -1,0 +1,31 @@
+# 现有 HTTPS 站点中追加的代理片段（示例：/etc/nginx/sites-available/campus-policy.conf）
+# 前提：域名证书已由现有 HTTPS 接入方式管理；后端监听 127.0.0.1:8000。
+
+server {
+    listen 443 ssl http2;
+    server_name policy.example.edu;          # 换成实际域名
+    # ssl_certificate     /path/fullchain.pem;   # 沿用现有证书
+    # ssl_certificate_key /path/privkey.pem;
+
+    client_max_body_size 220m;               # 资料包单包上限 200MB + 余量
+
+    location / {
+        proxy_pass http://127.0.0.1:8000;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        # SSE 必需：关闭缓冲、延长读超时、禁用请求体缓冲
+        proxy_buffering off;
+        proxy_cache off;
+        proxy_read_timeout 300s;
+        proxy_send_timeout 300s;
+        chunked_transfer_encoding on;
+    }
+}
+
+server {
+    listen 80;
+    server_name policy.example.edu;
+    return 301 https://$host$request_uri;
+}

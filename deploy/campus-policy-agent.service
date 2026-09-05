@@ -1,0 +1,29 @@
+# /etc/systemd/system/campus-policy-agent.service
+# 部署：sudo cp deploy/campus-policy-agent.service /etc/systemd/system/
+#       sudo systemctl daemon-reload && sudo systemctl enable --now campus-policy-agent
+[Unit]
+Description=班级政策问答 Agent（FastAPI 单进程）
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=www-data
+Group=www-data
+WorkingDirectory=/opt/campus-policy-agent/backend
+# 环境变量由 /opt/campus-policy-agent/backend/.env 注入（密钥文件，权限 600，不进 git、不进备份）
+EnvironmentFile=-/opt/campus-policy-agent/backend/.env
+Environment=DATA_DIR=/opt/campus-policy-agent/backend/data
+Environment=HOST=127.0.0.1
+Environment=PORT=8000
+ExecStart=/opt/campus-policy-agent/backend/../.venv/bin/python -m uvicorn app.main:app --app-dir /opt/campus-policy-agent/backend --host 127.0.0.1 --port 8000 --workers 1
+Restart=on-failure
+RestartSec=3
+# 1C1G 内存保护
+MemoryMax=700M
+MemoryHigh=600M
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
