@@ -107,7 +107,7 @@ def client(real_package_bytes, monkeypatch):
     from app.security import Tokens, init_admin
     from app.vectors import get_index
 
-    db = Database(config.data_dir / f"api-{json.loads('1') if False else 'x'}{id(real_package_bytes) % 9999}.db")
+    db = Database(config.data_dir / "campus.db")
     init_admin(db)
     api.db = db
     api.tokens = Tokens(db)
@@ -142,6 +142,7 @@ def client(real_package_bytes, monkeypatch):
 
         return np.ones(1024, dtype=np.float32) / 32
 
+    asyncio.run(fake_agent.close())
     fake_agent.gemini = FakeGemini()
     monkeypatch.setattr("app.agent.embed_query", fake_embed_query)
 
@@ -153,6 +154,9 @@ def client(real_package_bytes, monkeypatch):
     api.chats = ChatManager()
     api.agent = fake_agent
     yield c
+    c.close()
+    asyncio.run(fake_agent.close())
+    fake_agent.vectors.close_all()
     db.close()
 
 
@@ -233,6 +237,8 @@ def test_full_flow(client, real_package_bytes, tmp_path):
     assert bk.status_code == 200
     assert bk.content[:2] == b"PK"
     # 10) 备份恢复
+    assert client.post(f"/api/admin/documents/{uid}/deactivate", headers=ah).status_code == 200
+    assert len(client.get("/api/catalog", headers=user_h).json()["documents"]) == 4
     rs = client.post(
         "/api/admin/restore",
         files={"file": ("backup.zip", bk.content, "application/zip")},
