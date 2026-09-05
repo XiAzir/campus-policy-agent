@@ -15,3 +15,8 @@ frontend/node_modules/
 frontend/dist/
 skill/work/
 *.log
+
+# 预处理工作目录与成品包、真实测试文档不入库
+work/
+*.zip
+测试文档/
