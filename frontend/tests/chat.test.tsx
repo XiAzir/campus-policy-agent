@@ -82,6 +82,9 @@ test("pagehide aborts the live request", async () => {
   });
   await start();
   await screen.findByText("离开前内容");
+  expect(screen.queryByText("已中断（回答不完整，可重新提问）")).toBeNull();
+  expect((screen.getByRole("button", { name: "清空记录" }) as HTMLButtonElement).disabled).toBe(true);
+  expect((document.querySelector('input[type="file"]') as HTMLInputElement).disabled).toBe(true);
   fireEvent(window, new Event("pagehide"));
   await waitFor(() => expect(signal.aborted).toBe(true));
   await waitFor(async () => expect((await idb.listChats())[0].messages.at(-1)?.pending).toBe(false));

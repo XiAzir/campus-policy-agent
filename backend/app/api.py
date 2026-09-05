@@ -29,7 +29,7 @@ from .config import config
 from .db import Database, utcnow
 from .retrieval import allowed_doc_ids
 from .maintenance import maintenance
-from .storage import require_space
+from .storage import RESERVE_BYTES, require_space
 from .metrics import TurnMetrics, current_metrics
 from .security import (
     RateLimiter,
@@ -475,9 +475,21 @@ def admin_set_access_code(body: AccessCodeBody, authorization: str | None = Head
 
 
 @router.get("/admin/status")
-async def admin_status(authorization: str | None = Header(default=None)):
+def admin_status(authorization: str | None = Header(default=None)):
     require_admin_token(db, authorization)
     usage = shutil.disk_usage(config.data_dir)
+    data_bytes = 0
+    for path in config.data_dir.rglob("*"):
+        try:
+            if path.is_file():
+                data_bytes += path.stat().st_size
+        except FileNotFoundError:
+            continue
+    warnings = []
+    if data_bytes >= config.disk_warn_gb * 1e9:
+        warnings.append(f"项目数据已达到 {config.disk_warn_gb:g}GB 告警阈值，请检查容量并清理不再需要的草稿")
+    if usage.free < RESERVE_BYTES:
+        warnings.append("磁盘可用空间不足安全余量，资料处理将被拒绝")
     return {
         "disk": {
             "total_gb": round(usage.total / 1e9, 2),
@@ -491,7 +503,8 @@ async def admin_status(authorization: str | None = Header(default=None)):
             "chunks": db.one("SELECT COUNT(*) c FROM chunks")["c"],
             "packages": db.one("SELECT COUNT(*) c FROM packages")["c"],
         },
-        "data_dir_mb": round(sum(f.stat().st_size for f in config.data_dir.rglob("*") if f.is_file()) / 1e6, 1),
+        "data_dir_mb": round(data_bytes / 1e6, 1),
+        "warnings": warnings,
     }
 
 

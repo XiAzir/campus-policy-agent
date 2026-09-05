@@ -494,13 +494,14 @@ function SettingsTab() {
       {status && (
         <div className="panel">
           <h3>运行状态</h3>
+          {status.warnings?.map(warning => <p key={warning} role="alert" className="error">{warning}</p>)}
           <div className="doc-meta">
             <span>
-              磁盘：{status.disk.used_gb} / {status.disk.total_gb} GB（剩 {status.disk.free_gb} GB，阈值 {status.disk.warn_gb} GB）
+              所在磁盘：{status.disk.used_gb} / {status.disk.total_gb} GB（剩 {status.disk.free_gb} GB）
             </span>
             <span>资料：现行 {status.counts.current} / 共 {status.counts.documents}</span>
             <span>分块：{status.counts.chunks}</span>
-            <span>数据目录：{status.data_dir_mb} MB</span>
+            <span>项目数据：{status.data_dir_mb} MB（告警阈值 {status.disk.warn_gb} GB）</span>
           </div>
         </div>
       )}

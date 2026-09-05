@@ -222,6 +222,7 @@ export default function ChatPage() {
   };
 
   const importData = async (file: File) => {
+    if (busyRef.current) return;
     try {
       const n = await idb.importAll(file);
       setChats(await idb.listChats());
@@ -284,6 +285,7 @@ export default function ChatPage() {
             导入数据
             <input
               type="file"
+              disabled={busy}
               accept="application/json"
               style={{ display: "none" }}
               onChange={(e) => e.target.files?.[0] && importData(e.target.files[0])}
@@ -291,7 +293,9 @@ export default function ChatPage() {
           </label>
           <button
             className="danger"
+            disabled={busy}
             onClick={async () => {
+              if (busyRef.current) return;
               if (!window.confirm("清空全部本地聊天记录？")) return;
               await idb.clearChats();
               setCurrent(null);
@@ -402,7 +406,7 @@ export default function ChatPage() {
                       ))}
                     </div>
                   )}
-                  {m.interrupted && <div className="interrupted">已中断（回答不完整，可重新提问）</div>}
+                  {m.interrupted && !m.pending && <div className="interrupted">已中断（回答不完整，可重新提问）</div>}
                 </>
               ) : (
                 <span>{m.text}</span>

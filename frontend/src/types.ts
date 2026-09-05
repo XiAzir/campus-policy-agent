@@ -114,6 +114,7 @@ export interface AdminPackage {
 }
 
 export interface AdminStatus {
+  warnings: string[];
   disk: { total_gb: number; used_gb: number; free_gb: number; warn_gb: number };
   counts: { documents: number; current: number; chunks: number; packages: number };
   data_dir_mb: number;

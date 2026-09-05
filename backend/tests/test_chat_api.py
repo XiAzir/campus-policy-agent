@@ -354,3 +354,12 @@ def test_interrupted_upload_cleans_partial_file(client):
     with pytest.raises(asyncio.CancelledError):
         asyncio.run(api.admin_upload(None, InterruptedFile(), ah["Authorization"]))
     assert not list(config.data_dir.parent.glob("cpb-upload-*"))
+
+
+def test_project_disk_threshold_produces_visible_warning(client, monkeypatch):
+    from app.config import config
+    ah = _admin_headers(client)
+    monkeypatch.setattr(config, "disk_warn_gb", 0.000001)
+    response = client.get("/api/admin/status", headers=ah)
+    assert response.status_code == 200
+    assert any("项目数据已达到" in w for w in response.json()["warnings"])
