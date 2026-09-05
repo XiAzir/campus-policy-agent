@@ -9,7 +9,7 @@
 | `backend/` | FastAPI + LangGraph 后端：资料包校验/导入/发布/版本停用（`app/pkgfmt.py`、`app/ingest.py`）、jieba+FTS5 与 NumPy 向量混合检索（`app/retrieval.py`、`app/vectors.py`）、问答 Agent 与 SSE 聊天管理（`app/agent.py`、`app/chat.py`）、备份恢复（`app/backup.py`）、API（`app/api.py`）；测试 `tests/`，脚本 `scripts/` |
 | `frontend/` | React + TypeScript（Vite）：用户端（访问码登录、IndexedDB 历史/设置、引用弹窗、来源选择）+ 隐藏管理端（hash 路由 `#/admin`） |
 | `skill/` | 本地预处理 Skill（`SKILL.md`）与确定性脚本：文字提取、分块、向量生成、打包、校验 |
-| `docs/` | [资料包格式说明](docs/资料包格式说明.md)、[兼容性验证](docs/兼容性验证.md)、[人工测试清单](docs/人工测试清单.md) |
+| `docs/` | [资料包格式说明](docs/资料包格式说明.md)、[兼容性验证](docs/兼容性验证.md)、[审查修复记录](docs/审查修复记录.md)、[人工测试清单](docs/人工测试清单.md) |
 | `deploy/` | systemd 单进程单元、Nginx HTTPS 代理片段、服务器部署脚本 |
 
 ## 本地运行
@@ -41,14 +41,28 @@ cd frontend && npm install && npm run build && cd ..
 ## 测试与验证
 
 ```bash
-.venv/Scripts/python -m pytest backend/tests -q          # 21 项自动化测试
+.venv/Scripts/python -m pytest -q                       # 根目录运行，79 项离线测试
 .venv/Scripts/python backend/scripts/verify_compat.py    # 外部服务兼容性（需网络）
 .venv/Scripts/python backend/scripts/e2e_real.py         # 真实模型端到端（需网络与密钥）
 ```
 
+前端在 `frontend` 目录执行：
+
+```bash
+npm ci
+npm test                      # 11 项组件/API 测试
+npm run build                 # TypeScript + 生产构建
+npx playwright install chromium  # 仅本地测试机安装，服务器不安装浏览器
+npm run test:e2e               # 桌面/手机 Chromium 共 4 项，模拟 API
+```
+
+离线测试使用合成资料和隔离临时库。真实端到端脚本也使用临时库，不修改正式访问码或资料，但仍会调用付费外部服务，需先准备指定的真实测试包。旧版兼容性 PASS 不代表审查修复后已通过；人工验收、真实反代复验及 1C1G 压测未完成前不得上线。
+
 ## 部署（Ubuntu 24.04，1C1G）
 
 见 `deploy/deploy.sh` 与 `deploy/campus-policy-agent.service`；前端在本地构建，服务器只跑单后端进程并接入现有 HTTPS 代理（SSE 需关闭缓冲，见 nginx 片段）。
+
+升级需要安装更新的依赖（含 `psutil`）并重新构建前端。备份仅支持含资料包的完整 v2 格式；旧 v1 须在原实例重新导出。恢复故障标记、适用范围迁移和容量验收说明见 [审查修复记录](docs/审查修复记录.md)。
 
 ## 安全约定
 
