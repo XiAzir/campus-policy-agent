@@ -88,6 +88,8 @@ def _check_snapshot(root):
         if conn.execute("SELECT c.id FROM chunks c LEFT JOIN chunks_fts f ON f.rowid=c.id WHERE f.rowid IS NULL LIMIT 1").fetchone():
             raise ValueError("备份全文索引不完整")
         for pkg in conn.execute("SELECT * FROM packages"):
+            from .pkgfmt import validate_identity
+            validate_identity(dict(pkg))
             if hash_file(root / "packages" / f"{pkg['sha256']}.zip") != pkg["sha256"]:
                 raise ValueError("备份资料包哈希不匹配")
             name = f"pkg-{pkg['id']}" if pkg["status"] == "published" else f"pkg-draft-{pkg['sha256'][:16]}"

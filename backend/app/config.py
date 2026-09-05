@@ -29,6 +29,7 @@ class Config:
     siliconflow_api_key: str = os.environ.get("SILICONFLOW_API_KEY", "")
     siliconflow_model: str = os.environ.get("SILICONFLOW_EMBED_MODEL", "")
     embed_dims: int = _int_env("EMBED_DIMS", 1024)
+    preprocessing_version: str = os.environ.get("PREPROCESSING_VERSION", "v1")
 
     # 数据目录（资料、向量、SQLite）
     data_dir: Path = Path(os.environ.get("DATA_DIR", REPO_ROOT / "backend" / "data"))

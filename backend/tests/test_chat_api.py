@@ -307,3 +307,9 @@ def test_restore_cancels_running_and_waiting_jobs():
         assert not mgr._by_client and not mgr._waiting
         assert any(e["event"] == "error" for e in [x async for x in drain(second)])
     asyncio.run(run())
+
+
+def test_body_limit_rejects_declared_and_streamed_oversize(client):
+    assert client.post("/api/chat", content=b"{}", headers={"Content-Length": "999999999"}).status_code == 413
+    data = json.dumps({"code": "x" * (300 * 1024)}).encode()
+    assert client.post("/api/auth/login", content=iter([data]), headers={"Content-Type": "application/json"}).status_code == 413

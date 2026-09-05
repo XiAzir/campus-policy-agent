@@ -48,6 +48,18 @@ db: Database
 tokens: Tokens
 agent: Agent
 chats: ChatManager
+storage_busy = False
+
+
+async def storage_call(fn, *args):
+    global storage_busy
+    if storage_busy:
+        raise HTTPException(409, "已有资料处理任务，请稍后重试")
+    storage_busy = True
+    try:
+        return await run_in_threadpool(fn, *args)
+    finally:
+        storage_busy = False
 
 
 # ---------- 鉴权 ----------
@@ -305,7 +317,10 @@ async def admin_packages(authorization: str | None = Header(default=None)):
 @router.get("/admin/packages/{package_id}")
 async def admin_package_preview(package_id: int, authorization: str | None = Header(default=None)):
     require_admin_token(db, authorization)
-    preview = ingest.preview_package(db, package_id)
+    try:
+        preview = await storage_call(ingest.preview_package, db, package_id)
+    except (ValueError, ingest.PackageError) as exc:
+        raise HTTPException(400, str(exc)) from exc
     if preview is None:
         raise HTTPException(404, "资料包不存在")
     return preview
@@ -316,7 +331,7 @@ async def admin_upload(request: Request, file: UploadFile = File(...), authoriza
     require_admin_token(db, authorization)
     limiter.hit("pkgupload", rate_per_min=6, burst=5)
     max_bytes = config.max_package_mb * 1024 * 1024
-    with tempfile.NamedTemporaryFile(prefix="cpb-upload-", suffix=".zip", delete=False) as tmp:
+    with tempfile.NamedTemporaryFile(prefix="cpb-upload-", suffix=".zip", dir=config.data_dir.parent, delete=False) as tmp:
         total = 0
         while chunk := await file.read(1 << 20):
             total += len(chunk)
@@ -324,16 +339,20 @@ async def admin_upload(request: Request, file: UploadFile = File(...), authoriza
                 tmp.close()
                 Path(tmp.name).unlink(missing_ok=True)
                 raise HTTPException(413, f"资料包超过单包上限 {config.max_package_mb}MB，请分包导入")
-            tmp.write(chunk)
+            try:
+                require_space(config.data_dir.parent, len(chunk))
+                tmp.write(chunk)
+            except (ValueError, OSError) as exc:
+                tmp.close()
+                Path(tmp.name).unlink(missing_ok=True)
+                raise HTTPException(507, "磁盘空间不足") from exc
         tmp_path = Path(tmp.name)
     try:
-        data = tmp_path.read_bytes()
-    finally:
-        tmp_path.unlink(missing_ok=True)
-    try:
-        package_id = ingest.import_package(db, data, file.filename or "package.zip")
+        package_id = await storage_call(ingest.import_package, db, tmp_path, file.filename or "package.zip")
     except ingest.IngestError as exc:
         raise HTTPException(400, str(exc)) from exc
+    finally:
+        tmp_path.unlink(missing_ok=True)
     return {"id": package_id}
 
 
@@ -345,7 +364,7 @@ class MetaPatch(BaseModel):
 async def admin_patch_meta(package_id: int, doc_hash: str, body: MetaPatch, authorization: str | None = Header(default=None)):
     require_admin_token(db, authorization)
     try:
-        ingest.apply_override(db, package_id, doc_hash, body.fields)
+        await storage_call(ingest.apply_override, db, package_id, doc_hash, body.fields)
     except ingest.IngestError as exc:
         raise HTTPException(400, str(exc)) from exc
     return {"ok": True}
@@ -359,7 +378,7 @@ class PublishBody(BaseModel):
 async def admin_publish(package_id: int, body: PublishBody, authorization: str | None = Header(default=None)):
     require_admin_token(db, authorization)
     try:
-        ingest.publish_package(db, package_id, body.replacements)
+        await storage_call(ingest.publish_package, db, package_id, body.replacements)
     except ingest.IngestError as exc:
         raise HTTPException(400, str(exc)) from exc
     return {"ok": True}
@@ -368,20 +387,10 @@ async def admin_publish(package_id: int, body: PublishBody, authorization: str |
 @router.delete("/admin/packages/{package_id}")
 async def admin_discard(package_id: int, authorization: str | None = Header(default=None)):
     require_admin_token(db, authorization)
-    pkg = db.one("SELECT * FROM packages WHERE id=?", (package_id,))
-    if pkg is None:
-        raise HTTPException(404, "资料包不存在")
-    if pkg["status"] != "draft":
-        raise HTTPException(400, "已发布的资料包不可删除（其资料用停用功能管理）")
-    with db.tx() as conn:
-        conn.execute("DELETE FROM packages WHERE id=?", (package_id,))
-    from .vectors import close_mmap_for
-
-    draft = config.data_dir / "vectors" / f"pkg-draft-{pkg['sha256'][:16]}.npy"
-    close_mmap_for(config.data_dir / "vectors", draft)
-    draft.unlink(missing_ok=True)
-    ingest.package_path(pkg["sha256"]).unlink(missing_ok=True)
-    db.audit("admin", "package_discard", f"package={package_id}")
+    try:
+        await storage_call(ingest.discard_package, db, package_id)
+    except ingest.IngestError as exc:
+        raise HTTPException(400, str(exc)) from exc
     return {"ok": True}
 
 

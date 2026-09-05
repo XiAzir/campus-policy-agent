@@ -15,7 +15,8 @@ from pathlib import Path
 
 from .config import config
 from .db import Database, utcnow
-from .pkgfmt import PackageError, validate_package
+from .pkgfmt import PackageError, validated_package, _validate_manifest
+from .storage import hash_file, require_space
 
 EDITABLE_FIELDS = {"title", "department", "effective_date", "audience", "notes", "replaces"}
 
@@ -38,53 +39,44 @@ def package_path(package_sha: str) -> Path:
 
 @locked_files
 def import_package(db: Database, data: bytes, original_filename: str) -> int:
-    """校验并落盘为草稿；返回 package id。重复导入（包哈希一致）拒绝。"""
     try:
-        manifest, docs, vecs, files, texts = validate_package(data)
-    except PackageError as exc:
+        with validated_package(data) as pkg:
+            return _import_validated(db, pkg, original_filename)
+    except (PackageError, ValueError, OSError) as exc:
         raise IngestError(f"校验未通过：{exc}") from exc
 
-    import hashlib
 
-    package_sha = hashlib.sha256(data).hexdigest()
+def _import_validated(db, pkg, original_filename):
+    manifest, docs = pkg["manifest"], pkg["documents"]
+    package_sha = pkg["sha256"]
     if db.one("SELECT id FROM packages WHERE sha256=?", (package_sha,)):
         raise IngestError("该资料包已导入过（包哈希一致），拒绝重复导入")
 
     dest = package_path(package_sha)
     dest.parent.mkdir(parents=True, exist_ok=True)
-    tmp = dest.with_suffix(".tmp")
-    tmp.write_bytes(data)
-    tmp.replace(dest)
-
     vectors_dir = config.data_dir / "vectors"
     vectors_dir.mkdir(parents=True, exist_ok=True)
-    import numpy as np
-
-    from .vectors import close_mmap_for
-
     draft_vec = vectors_dir / f"pkg-draft-{package_sha[:16]}.npy"
-    close_mmap_for(vectors_dir, draft_vec)
-    np.save(draft_vec, vecs)
-
-    with db.tx() as conn:
-        cur = conn.execute(
-            "INSERT INTO packages(sha256, original_filename, size, imported_at, status,"
-            " preprocessing_version, embed_model, embed_dim, doc_count, chunk_count)"
-            " VALUES(?,?,?,?, 'draft', ?,?,?,?,?)",
-            (
-                package_sha,
-                original_filename,
-                len(data),
-                utcnow(),
-                manifest["preprocessing_version"],
-                manifest["embed_model"],
-                manifest["embed_dim"],
-                len(docs),
-                manifest["vectors"]["count"],
-            ),
-        )
-        package_id = cur.lastrowid
-    db.audit("admin", "package_import", f"package={package_id} docs={len(docs)} chunks={manifest['vectors']['count']}")
+    tmp = dest.with_suffix(".tmp")
+    try:
+        shutil.copyfile(pkg["path"], tmp)
+        tmp.replace(dest)
+        shutil.copyfile(pkg["root"] / "vectors.npy", draft_vec)
+        with db.tx() as conn:
+            cur = conn.execute(
+                "INSERT INTO packages(sha256, original_filename, size, imported_at, status,"
+                " preprocessing_version, embed_model, embed_dim, doc_count, chunk_count)"
+                " VALUES(?,?,?,?, 'draft', ?,?,?,?,?)",
+                (package_sha, original_filename, pkg["size"], utcnow(), manifest["preprocessing_version"],
+                 manifest["embed_model"], manifest["embed_dim"], len(docs), manifest["vectors"]["count"]),
+            )
+            package_id = cur.lastrowid
+            conn.execute("INSERT INTO audit_log(at,actor,action,detail) VALUES(?,?,?,?)",
+                (utcnow(), "admin", "package_import", f"package={package_id}"))
+    except BaseException:
+        for path in (tmp, dest, draft_vec):
+            path.unlink(missing_ok=True)
+        raise
     return package_id
 
 
@@ -93,6 +85,7 @@ def _overrides(db: Database, package_id: int) -> dict:
     return json.loads(row["meta_overrides"]) if row else {}
 
 
+@locked_files
 def apply_override(db: Database, package_id: int, doc_hash: str, fields: dict) -> None:
     """草稿阶段元数据修正：仅允许不影响分块/向量的字段。"""
     bad = set(fields) - EDITABLE_FIELDS
@@ -105,6 +98,18 @@ def apply_override(db: Database, package_id: int, doc_hash: str, fields: dict) -
         raise IngestError("资料包不存在")
     if row["status"] != "draft":
         raise IngestError("只有草稿状态可以修正元数据")
+    pkg = db.one("SELECT sha256 FROM packages WHERE id=?", (package_id,))
+    with validated_package(package_path(pkg["sha256"])) as checked:
+        doc = next((d for d in checked["documents"] if d["doc_hash"] == doc_hash), None)
+        if doc is None:
+            raise IngestError("该文档不在草稿中")
+        doc.update(fields)
+        try:
+            _validate_manifest(checked["manifest"])
+        except (PackageError, TypeError, ValueError) as exc:
+            raise IngestError("元数据格式不合法") from exc
+        if "replaces" in fields and fields["replaces"] is not None and not isinstance(fields["replaces"], str):
+            raise IngestError("替代目标必须是文档标识或空值")
     ov = _overrides(db, package_id)
     ov.setdefault(doc_hash, {}).update(fields)
     with db.tx() as conn:
@@ -114,24 +119,24 @@ def apply_override(db: Database, package_id: int, doc_hash: str, fields: dict) -
     db.audit("admin", "package_meta_edit", f"package={package_id} doc={doc_hash[:12]}… fields={sorted(fields)}")
 
 
+@locked_files
 def preview_package(db: Database, package_id: int) -> dict | None:
     """草稿预览：包信息、校验结论、逐文档元数据（含 overrides 与替代目标提示）。"""
     pkg = db.one("SELECT * FROM packages WHERE id=?", (package_id,))
     if pkg is None:
         return None
-    import zipfile
+    with validated_package(package_path(pkg["sha256"]), check_identity=False) as checked:
+        return _preview_validated(db, pkg, checked)
 
-    import numpy as np
 
-    from .pkgfmt import sha256_bytes
-
-    data = package_path(pkg["sha256"]).read_bytes()
-    manifest, docs, vecs, files, texts = validate_package(data)  # 预览时复核
+def _preview_validated(db, pkg, checked):
+    package_id = pkg["id"]
+    docs = checked["documents"]
     ov = _overrides(db, package_id)
     doc_list = []
     for d in docs:
         meta = ov.get(d["doc_hash"], {})
-        target = d.get("replaces") or meta.get("replaces")
+        target = meta.get("replaces", d.get("replaces"))
         target_uid = None
         if target:
             # 允许填旧版 doc_hash 或 doc_uid
@@ -170,7 +175,7 @@ def preview_package(db: Database, package_id: int) -> dict | None:
         "embed_dim": pkg["embed_dim"],
         "doc_count": pkg["doc_count"],
         "chunk_count": pkg["chunk_count"],
-        "vector_shape": list(vecs.shape) if vecs is not None else None,
+        "vector_shape": [pkg["chunk_count"], pkg["embed_dim"]],
         "documents": doc_list,
     }
 
@@ -183,9 +188,36 @@ def publish_package(db: Database, package_id: int, replacements: dict[str, str |
         raise IngestError("资料包不存在")
     if pkg["status"] != "draft":
         raise IngestError("资料包不是草稿状态")
-    data = package_path(pkg["sha256"]).read_bytes()
-    manifest, docs, vecs, files, texts = validate_package(data)
+    try:
+        with validated_package(package_path(pkg["sha256"])) as checked:
+            _publish_validated(db, pkg, replacements, checked)
+    except (PackageError, ValueError, OSError) as exc:
+        raise IngestError(f"发布失败：{exc}") from exc
+
+
+def _publish_validated(db, pkg, replacements, checked):
+    package_id = pkg["id"]
+    manifest, docs = checked["manifest"], checked["documents"]
     ov = _overrides(db, package_id)
+
+    targets = set()
+    if set(replacements) - {d["doc_hash"] for d in docs}:
+        raise IngestError("替代映射包含包外文档")
+    for doc in docs:
+        doc.update(ov.get(doc["doc_hash"], {}))
+        target = replacements.get(doc["doc_hash"], doc.get("replaces"))
+        if target:
+            matches = db.q("SELECT id FROM documents WHERE doc_uid=? OR doc_hash=?", (target, target))
+            if len(matches) != 1:
+                raise IngestError("替代目标不存在或不唯一，请使用文档标识")
+            old_id = matches[0]["id"]
+            if old_id in targets or db.one("SELECT id FROM documents WHERE replaces_doc_id=?", (old_id,)):
+                raise IngestError("同一旧版已有替代版本，请选择当前链尾版本")
+            targets.add(old_id)
+        same = db.one("SELECT text_sha256 FROM documents WHERE doc_hash=?", (doc["doc_hash"],))
+        if same and same["text_sha256"] != doc["text_sha256"]:
+            raise IngestError("同一原文件已存在不同标准化原文，不能覆盖历史引用")
+    _validate_manifest(manifest)
 
     # 向量文件就位（发布即从草稿名改为正式名）
     vectors_dir = config.data_dir / "vectors"
@@ -197,23 +229,34 @@ def publish_package(db: Database, package_id: int, replacements: dict[str, str |
 
     close_mmap_for(vectors_dir, final_vec)
     close_mmap_for(vectors_dir, draft_vec)
-    shutil.move(str(draft_vec), str(final_vec))
+    created = []
 
     files_dir = config.data_dir / "files"
     text_dir = config.data_dir / "text"
     files_dir.mkdir(parents=True, exist_ok=True)
     text_dir.mkdir(parents=True, exist_ok=True)
     try:
-        for fname, blob in files.items():
-            dest = files_dir / fname.replace("files/", "", 1)
-            if not dest.exists():
-                dest.write_bytes(blob)
-        for tname, text in texts.items():
-            dest = text_dir / tname.replace("text/", "", 1)
-            if not dest.exists():
-                dest.write_text(text, encoding="utf-8", newline="")
-    except OSError as exc:
-        raise IngestError(f"落盘失败，发布中止：{exc}") from exc
+        for sub in ("files", "text"):
+            for source in (checked["root"] / sub).iterdir():
+                dest = config.data_dir / sub / source.name
+                if dest.exists():
+                    if hash_file(dest) != hash_file(source):
+                        raise IngestError("现有资料文件哈希不一致，发布中止")
+                else:
+                    created.append(dest)
+                    source.replace(dest)
+        # The validated vector replaces only unpublished residue; draft remains retryable.
+        created.append(final_vec)
+        (checked["root"] / "vectors.npy").replace(final_vec)
+        _commit_documents(db, package_id, docs, ov, replacements)
+    except BaseException:
+        for dest in reversed(created):
+            dest.unlink(missing_ok=True)
+        raise
+    draft_vec.unlink(missing_ok=True)
+
+
+def _commit_documents(db, package_id, docs, ov, replacements):
 
     with db.tx() as conn:
         for d in docs:
@@ -292,7 +335,23 @@ def publish_package(db: Database, package_id: int, replacements: dict[str, str |
                     (chunk_id, ch["vector_index"], doc_id, package_id),
                 )
         conn.execute("UPDATE packages SET status='published' WHERE id=?", (package_id,))
-    db.audit("admin", "package_publish", f"package={package_id} docs={len(docs)}")
+        conn.execute("INSERT INTO audit_log(at,actor,action,detail) VALUES(?,?,?,?)",
+            (utcnow(), "admin", "package_publish", f"package={package_id} docs={len(docs)}"))
+
+
+@locked_files
+def discard_package(db, package_id):
+    pkg = db.one("SELECT * FROM packages WHERE id=?", (package_id,))
+    if pkg is None or pkg["status"] != "draft":
+        raise IngestError("只有存在的草稿可以丢弃")
+    from .vectors import close_mmap_for
+    draft = config.data_dir / "vectors" / f"pkg-draft-{pkg['sha256'][:16]}.npy"
+    close_mmap_for(config.data_dir / "vectors", draft)
+    with db.tx() as conn:
+        conn.execute("DELETE FROM packages WHERE id=?", (package_id,))
+    draft.unlink(missing_ok=True)
+    package_path(pkg["sha256"]).unlink(missing_ok=True)
+    db.audit("admin", "package_discard", f"package={package_id}")
 
 
 def _fts_body(text: str) -> str:

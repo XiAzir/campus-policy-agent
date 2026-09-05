@@ -67,8 +67,8 @@ def validate(path: Path) -> list[str]:
                 errors.append("向量包含非有限值")
             else:
                 norms = np.linalg.norm(vecs, axis=1)
-                if float(norms.min()) <= 1e-6:
-                    errors.append("向量包含零向量")
+                if float(norms.min()) <= 1e-6 or not np.allclose(norms, 1, atol=1e-3):
+                    errors.append("向量必须非零且已归一化")
 
             for doc in docs:
                 h = doc["doc_hash"]

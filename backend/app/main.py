@@ -17,6 +17,7 @@ from .db import Database
 from .llm import LLMError
 from .logging_safe import configure_logging
 from .maintenance import MaintenanceMiddleware
+from .body_limit import BodyLimitMiddleware
 from .security import Tokens, init_admin
 from .vectors import get_index
 
@@ -47,6 +48,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="班级政策问答 Agent", lifespan=lifespan, docs_url=None, redoc_url=None)
 app.add_middleware(MaintenanceMiddleware)
+app.add_middleware(BodyLimitMiddleware)
 
 
 @app.exception_handler(LLMError)
