@@ -94,3 +94,45 @@ def test_threaded_login_bucket_is_atomic():
             return False
     with ThreadPoolExecutor(max_workers=20) as pool:
         assert sum(pool.map(attempt, range(100))) == 10
+
+
+def test_stream_preserves_signed_parts_without_exposing_thoughts():
+    import json
+    original = [{"text": "private-thought", "thought": True}, {"text": "answer"},
+        {"functionCall": {"name": "policy_search", "args": {}, "id": "call-1"}, "thoughtSignature": "signature-a"},
+        {"text": "", "thoughtSignature": "signature-b"}]
+    payload = "".join("data: " + json.dumps({"candidates": [{"content": {"parts": [p]}}]}) + "\n\n" for p in original)
+    async def run():
+        client = GeminiClient()
+        await client.close()
+        client._client = httpx.AsyncClient(transport=httpx.MockTransport(lambda _: httpx.Response(200, text=payload)))
+        try:
+            events = [e async for e in client.stream([])]
+            assert events[-1]["parts"] == original
+            assert "".join(e["text"] for e in events if e["type"] == "text") == "answer"
+        finally:
+            await client.close()
+    asyncio.run(run())
+
+
+def test_compatibility_checks_use_headers_and_hide_error_bodies(capsys):
+    import importlib.util
+    from pathlib import Path
+    spec = importlib.util.spec_from_file_location("verify_compat", Path(__file__).parents[1] / "scripts" / "verify_compat.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    seen = []
+    def response(request):
+        seen.append(request)
+        return httpx.Response(400, text="private-upstream-secret")
+    async def run():
+        async with httpx.AsyncClient(transport=httpx.MockTransport(response)) as client:
+            await module.gemini_basic(client)
+            await module.gemini_function_call(client)
+            await module.gemini_stream(client)
+            await module.embedding_dims(client)
+    asyncio.run(run())
+    assert "private-upstream-secret" not in capsys.readouterr().out
+    for request in seen[:3]:
+        assert "key" not in request.url.params
+        assert request.headers["x-goog-api-key"] == config.gemini_api_key

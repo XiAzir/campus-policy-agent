@@ -37,6 +37,9 @@ SF_DIMS = int(os.environ.get("EMBED_DIMS", "1024"))
 import httpx  # noqa: E402
 import jieba  # noqa: E402
 import numpy as np  # noqa: E402
+from app.logging_safe import configure_logging  # noqa: E402
+
+configure_logging()
 
 RESULTS: list[dict] = []
 
@@ -54,17 +57,17 @@ async def gemini_basic(client: httpx.AsyncClient) -> None:
         "generationConfig": {"temperature": 0},
     }
     t0 = time.time()
-    r = await client.post(url, params={"key": GEMINI_KEY}, json=payload, timeout=60)
+    r = await client.post(url, headers={"x-goog-api-key": GEMINI_KEY}, json=payload, timeout=60)
     if r.status_code != 200:
-        record("Gemini 普通生成", False, f"HTTP {r.status_code}: {r.text[:300]}")
+        record("Gemini 普通生成", False, f"HTTP {r.status_code}")
         return
     data = r.json()
     try:
         text = data["candidates"][0]["content"]["parts"][0]["text"]
     except (KeyError, IndexError):
-        record("Gemini 普通生成", False, f"响应结构异常: {json.dumps(data)[:300]}")
+        record("Gemini 普通生成", False, "响应结构异常")
         return
-    record("Gemini 普通生成", True, f"回复={text.strip()[:20]!r} 耗时{time.time()-t0:.1f}s")
+    record("Gemini 普通生成", bool(text.strip()), f"收到文本，耗时{time.time()-t0:.1f}s；使用请求头鉴权")
 
 
 DECLARE_SEARCH_TOOL = {
@@ -112,9 +115,9 @@ async def gemini_function_call(client: httpx.AsyncClient) -> None:
             "tools": [DECLARE_SEARCH_TOOL],
             "generationConfig": {"temperature": 0},
         }
-        r = await client.post(url, params={"key": GEMINI_KEY}, json=payload, timeout=90)
+        r = await client.post(url, headers={"x-goog-api-key": GEMINI_KEY}, json=payload, timeout=90)
         if r.status_code != 200:
-            record("Gemini 函数调用", False, f"第{round_no+1}轮 HTTP {r.status_code}: {r.text[:300]}")
+            record("Gemini 函数调用", False, f"第{round_no+1}轮 HTTP {r.status_code}")
             return
         parts = r.json()["candidates"][0]["content"]["parts"]
         contents.append({"role": "model", "parts": parts})
@@ -122,7 +125,7 @@ async def gemini_function_call(client: httpx.AsyncClient) -> None:
         if not calls:
             texts = "".join(p.get("text", "") for p in parts)
             ok = "警告" in texts
-            detail = f"最终回复: {texts.strip()[:60]!r}"
+            detail = f"第{round_no+1}轮得到文字结论，符合合成依据={ok}"
             break
         fr_parts = []
         for c in calls:
@@ -145,11 +148,10 @@ async def gemini_stream(client: httpx.AsyncClient) -> None:
     text_parts: list[str] = []
     try:
         async with client.stream(
-            "POST", url, params={"key": GEMINI_KEY, "alt": "sse"}, json=payload, timeout=90
+            "POST", url, headers={"x-goog-api-key": GEMINI_KEY}, params={"alt": "sse"}, json=payload, timeout=90
         ) as r:
             if r.status_code != 200:
-                body = (await r.aread()).decode("utf-8", "replace")
-                record("Gemini 流式 SSE", False, f"HTTP {r.status_code}: {body[:300]}")
+                record("Gemini 流式 SSE", False, f"HTTP {r.status_code}")
                 return
             async for line in r.aiter_lines():
                 if not line.startswith("data:"):
@@ -165,10 +167,10 @@ async def gemini_stream(client: httpx.AsyncClient) -> None:
         record(
             "Gemini 流式 SSE",
             chunks > 0,
-            f"收到 {chunks} 个 SSE 事件，拼接文本: {''.join(text_parts).strip()[:30]!r}",
+            f"收到 {chunks} 个 SSE 事件，文本字符数={sum(map(len, text_parts))}",
         )
     except Exception as exc:  # noqa: BLE001
-        record("Gemini 流式 SSE", False, f"异常 {type(exc).__name__}: {exc}")
+        record("Gemini 流式 SSE", False, f"异常 {type(exc).__name__}")
 
 
 async def embed(client: httpx.AsyncClient, texts: list[str], dims: int | None) -> tuple[bool, list[list[float]] | None, str]:
@@ -182,7 +184,7 @@ async def embed(client: httpx.AsyncClient, texts: list[str], dims: int | None) -
         timeout=120,
     )
     if r.status_code != 200:
-        return False, None, f"HTTP {r.status_code}: {r.text[:300]}"
+        return False, None, f"HTTP {r.status_code}"
     data = r.json()
     vecs = [item["embedding"] for item in data["data"]]
     return True, vecs, f"返回 {len(vecs[0])} 维"
@@ -273,13 +275,17 @@ def citation_roundtrip() -> None:
 async def main() -> None:
     print(f"模型: {GEMINI_MODEL} / {SF_MODEL}（密钥不打印）")
     async with httpx.AsyncClient() as client:
-        await gemini_basic(client)
-        await gemini_function_call(client)
-        await gemini_stream(client)
-        await embedding_dims(client)
+        for check in (gemini_basic, gemini_function_call, gemini_stream, embedding_dims):
+            try:
+                await check(client)
+            except Exception as exc:
+                record(check.__name__, False, f"异常 {type(exc).__name__}")
     fts_jieba()
     citation_roundtrip()
-    await vector_recall()
+    try:
+        await vector_recall()
+    except Exception as exc:
+        record("向量中文召回", False, f"异常 {type(exc).__name__}")
 
     lines = ["# 兼容性验证结果", "", f"运行时间：{time.strftime('%Y-%m-%d %H:%M:%S')}", ""]
     for r in RESULTS:
