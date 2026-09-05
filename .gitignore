@@ -2,3 +2,16 @@
 deploy-config.md
 .env
 .env.*
+
+# 本地运行时产物
+.venv/
+venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+data/
+backend/data/
+frontend/node_modules/
+frontend/dist/
+skill/work/
+*.log
