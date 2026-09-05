@@ -49,11 +49,11 @@ class GeminiClient:
         if tools:
             payload["tools"] = tools
         try:
-            r = await self._client.post(self._url("generateContent"), params={"key": config.gemini_api_key}, json=payload)
+            r = await self._client.post(self._url("generateContent"), headers={"x-goog-api-key": config.gemini_api_key}, json=payload)
         except httpx.HTTPError as exc:
             raise LLMError(f"模型服务不可达：{type(exc).__name__}") from exc
         if r.status_code != 200:
-            raise LLMError(f"模型调用失败 HTTP {r.status_code}：{r.text[:200]}")
+            raise LLMError(f"模型调用失败 HTTP {r.status_code}")
         try:
             return r.json()["candidates"][0]["content"]["parts"]
         except (KeyError, IndexError) as exc:
@@ -85,12 +85,12 @@ class GeminiClient:
             async with self._client.stream(
                 "POST",
                 self._url("streamGenerateContent"),
-                params={"key": config.gemini_api_key, "alt": "sse"},
+                params={"alt": "sse"},
+                headers={"x-goog-api-key": config.gemini_api_key},
                 json=payload,
             ) as r:
                 if r.status_code != 200:
-                    body = (await r.aread()).decode("utf-8", "replace")
-                    raise LLMError(f"模型调用失败 HTTP {r.status_code}：{body[:200]}")
+                    raise LLMError(f"模型调用失败 HTTP {r.status_code}")
                 async for line in r.aiter_lines():
                     if not line.startswith("data:"):
                         continue
@@ -138,7 +138,7 @@ async def embed_query(text: str, dims: int | None = None) -> np.ndarray:
         except httpx.HTTPError as exc:
             raise LLMError(f"向量化服务不可达：{type(exc).__name__}") from exc
     if r.status_code != 200:
-        raise LLMError(f"向量化失败 HTTP {r.status_code}：{r.text[:200]}")
+        raise LLMError(f"向量化失败 HTTP {r.status_code}")
     vec = np.asarray(r.json()["data"][0]["embedding"], dtype=np.float32)
     if vec.shape[0] != dims:
         raise LLMError(f"向量化返回维度 {vec.shape[0]} 与配置 {dims} 不一致")

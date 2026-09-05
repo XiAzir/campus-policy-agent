@@ -16,7 +16,7 @@ EnvironmentFile=-/opt/campus-policy-agent/backend/.env
 Environment=DATA_DIR=/opt/campus-policy-agent/backend/data
 Environment=HOST=127.0.0.1
 Environment=PORT=8000
-ExecStart=/opt/campus-policy-agent/backend/../.venv/bin/python -m uvicorn app.main:app --app-dir /opt/campus-policy-agent/backend --host 127.0.0.1 --port 8000 --workers 1
+ExecStart=/opt/campus-policy-agent/backend/../.venv/bin/python -m uvicorn app.main:app --app-dir /opt/campus-policy-agent/backend --host 127.0.0.1 --port 8000 --workers 1 --proxy-headers --forwarded-allow-ips=127.0.0.1
 Restart=on-failure
 RestartSec=3
 # 1C1G 内存保护

@@ -93,8 +93,8 @@ limiter = RateLimiter()
 
 
 def client_ip(request: Request) -> str:
-    fwd = request.headers.get("x-forwarded-for")
-    return fwd.split(",")[0].strip() if fwd else (request.client.host if request.client else "?")
+    # Uvicorn applies proxy headers only for explicitly trusted peers.
+    return request.client.host if request.client else "?"
 
 
 def _client_id(x_client_id: str | None) -> str:

@@ -15,11 +15,12 @@ from .chat import ChatManager
 from .config import REPO_ROOT, config, ensure_secrets
 from .db import Database
 from .llm import LLMError
+from .logging_safe import configure_logging
 from .security import Tokens, init_admin
 from .vectors import get_index
 
 log = logging.getLogger("campus-policy")
-logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
+configure_logging()
 
 
 @asynccontextmanager
