@@ -100,10 +100,12 @@ function PackagesTab() {
   const [progress, setProgress] = useState(-1);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
+  const [documents, setDocuments] = useState<CatalogDoc[]>([]);
 
   const refresh = () => api.adminPackages().then((r) => setPackages(r.packages));
   useEffect(() => {
     refresh().catch((e) => setError(String(e)));
+    api.adminDocuments().then(r => setDocuments(r.documents)).catch(e => setError(String(e)));
   }, []);
 
   const upload = async (file: File) => {
@@ -122,6 +124,7 @@ function PackagesTab() {
   };
 
   const publish = async (pkg: AdminPackage) => {
+    if (pkg.documents.some(d => d.replaces_unresolved)) { setError("请先修正无法解析的替代目标"); return; }
     if (!window.confirm(`确认发布《${pkg.original_filename}》？新版就绪才会切换现行版本。`)) return;
     setError("");
     const replacements: Record<string, string | null> = {};
@@ -220,7 +223,7 @@ function PackagesTab() {
               {preview.chunk_count} 分块 {preview.vector_shape ? `(${preview.vector_shape.join("×")})` : ""}
             </p>
             {preview.documents.map((d) => (
-              <DocPreview key={d.doc_hash} pkg={preview} doc={d} onChanged={() => api.adminPackage(preview.id).then(setPreview)} />
+              <DocPreview key={d.doc_hash} pkg={preview} doc={d} documents={documents} onChanged={() => api.adminPackage(preview.id).then(setPreview)} />
             ))}
             {preview.status === "draft" && (
               <div className="row-actions">
@@ -234,13 +237,18 @@ function PackagesTab() {
   );
 }
 
-function DocPreview({ pkg, doc, onChanged }: { pkg: AdminPackage; doc: AdminPackage["documents"][0]; onChanged: () => void }) {
+function DocPreview({ pkg, doc, documents, onChanged }: { pkg: AdminPackage; doc: AdminPackage["documents"][0]; documents: CatalogDoc[]; onChanged: () => void }) {
   const [editing, setEditing] = useState(false);
   const [fields, setFields] = useState({
     title: doc.title,
     department: doc.department,
     effective_date: doc.effective_date ?? "",
     notes: doc.notes,
+    replaces: doc.replaces_doc_uid || "",
+    audience: doc.audience.join("、"),
+    colleges: (doc.audience_scope?.colleges || []).join("、"),
+    entryYears: (doc.audience_scope?.entry_years || []).join("、"),
+    confirmed: doc.audience_scope?.confirmed || false,
   });
   const [error, setError] = useState("");
 
@@ -248,8 +256,13 @@ function DocPreview({ pkg, doc, onChanged }: { pkg: AdminPackage; doc: AdminPack
     setError("");
     try {
       await api.adminPatchMeta(pkg.id, doc.doc_hash, {
-        ...fields,
+        title: fields.title, department: fields.department, notes: fields.notes,
         effective_date: fields.effective_date || null,
+        replaces: fields.replaces || null,
+        audience: fields.audience.split(/[、,，]/).map(x => x.trim()).filter(Boolean),
+        audience_scope: { confirmed: fields.confirmed,
+          colleges: fields.colleges.split(/[、,，]/).map(x => x.trim()).filter(Boolean),
+          entry_years: fields.entryYears.split(/[、,，]/).map(x => x.trim()).filter(Boolean) },
       });
       setEditing(false);
       onChanged();
@@ -290,6 +303,16 @@ function DocPreview({ pkg, doc, onChanged }: { pkg: AdminPackage; doc: AdminPack
                 placeholder="生效日期 YYYY-MM-DD"
               />
               <input value={fields.notes} onChange={(e) => setFields({ ...fields, notes: e.target.value })} placeholder="备注" />
+              <label>替代旧版<select aria-label="替代旧版" value={fields.replaces} onChange={e => setFields({ ...fields, replaces: e.target.value })}>
+                <option value="">不替代</option>
+                {documents.filter(d => !documents.some(n => n.replaces_doc_uid === d.doc_uid)).map(d => (
+                  <option key={d.doc_uid} value={d.doc_uid}>{d.title}（{d.effective_date || "生效日期未填写"}）</option>
+                ))}
+              </select></label>
+              <label>适用范围标签<input aria-label="适用范围标签" value={fields.audience} onChange={e => setFields({ ...fields, audience: e.target.value })} /></label>
+              <label>适用学院<input aria-label="适用学院" value={fields.colleges} onChange={e => setFields({ ...fields, colleges: e.target.value })} /></label>
+              <label>适用入学年份<input aria-label="适用入学年份" value={fields.entryYears} onChange={e => setFields({ ...fields, entryYears: e.target.value })} /></label>
+              <label><input type="checkbox" checked={fields.confirmed} onChange={e => setFields({ ...fields, confirmed: e.target.checked })} />适用条件已确认（空项不限）</label>
               <button onClick={save}>保存</button>
               <button className="ghost" onClick={() => setEditing(false)}>
                 取消
@@ -364,12 +387,17 @@ function DocumentsTab() {
                 )}
                 <button
                   onClick={async () => {
-                    const r = await api.versions(d.doc_uid);
-                    setHistory({ uid: d.doc_uid, versions: r.versions });
+                    try {
+                      const r = await api.adminVersions(d.doc_uid);
+                      setHistory({ uid: d.doc_uid, versions: r.versions });
+                    } catch (e) { setError(e instanceof Error ? e.message : "版本读取失败"); }
                   }}
                 >
                   版本链
                 </button>
+                {d.replaces_doc_uid && <button onClick={() => {
+                  if (window.confirm(`确认解除《${d.title}》对旧版的替代关系？`)) act(() => api.adminUnlink(d.doc_uid));
+                }}>解除替代关系</button>}
               </td>
             </tr>
           ))}

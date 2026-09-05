@@ -85,7 +85,20 @@ export const api = {
   catalog: () => request<{ documents: CatalogDoc[] }>("/api/catalog"),
   sourceText: (docUid: string, from: number, to: number) =>
     request<SourceText>(`/api/source/${docUid}/text?frm=${from}&to=${to}`),
-  sourceFileUrl: (docUid: string) => `/api/source/${docUid}/file`,
+  downloadSource: async (docUid: string) => {
+    const r = await fetch(`/api/source/${encodeURIComponent(docUid)}/file`, { headers: { Authorization: `Bearer ${getToken() || ""}` } });
+    if (!r.ok) throw new ApiError(r.status, "原文件下载失败");
+    const disposition = r.headers.get("Content-Disposition") || "";
+    const encoded = disposition.match(/filename\*=UTF-8''([^;]+)/i)?.[1];
+    const filename = encoded ? decodeURIComponent(encoded) : disposition.match(/filename="?([^";]+)/i)?.[1] || "source";
+    const blob = await r.blob();
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = filename;
+    link.click();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  },
   versions: (docUid: string) => request<{ versions: VersionInfo[] }>(`/api/source/${docUid}/versions`),
 
   adminPackages: () => request<{ packages: AdminPackage[] }>("/api/admin/packages", {}, "admin"),
@@ -126,6 +139,7 @@ export const api = {
     ),
   adminDiscard: (pkgId: number) => request<{ ok: boolean }>(`/api/admin/packages/${pkgId}`, { method: "DELETE" }, "admin"),
   adminDocuments: () => request<{ documents: CatalogDoc[] }>("/api/admin/documents", {}, "admin"),
+  adminVersions: (uid: string) => request<{ versions: VersionInfo[] }>(`/api/admin/documents/${uid}/versions`, {}, "admin"),
   adminDeactivate: (uid: string) => request<{ ok: boolean }>(`/api/admin/documents/${uid}/deactivate`, { method: "POST" }, "admin"),
   adminEnable: (uid: string) => request<{ ok: boolean }>(`/api/admin/documents/${uid}/enable`, { method: "POST" }, "admin"),
   adminUnlink: (uid: string) => request<{ ok: boolean }>(`/api/admin/documents/${uid}/unlink`, { method: "POST" }, "admin"),
@@ -175,7 +189,7 @@ export function prefsToStorage(p: UserPrefs) {
 /** 聊天 SSE：POST + 流式解析 data: 行；abort 触发服务端断线清理。 */
 export async function streamChat(
   body: Record<string, unknown>,
-  onEvent: (ev: import("./types").ChatEvent) => void,
+  onEvent: (ev: import("./types").ChatEvent) => void | Promise<void>,
   signal: AbortSignal
 ): Promise<void> {
   const r = await fetch("/api/chat", {
@@ -189,15 +203,20 @@ export async function streamChat(
     try {
       detail = (await r.json()).detail || detail;
     } catch {}
-    onEvent({ event: "error", message: detail });
+    await onEvent({ event: "error", message: detail });
     return;
   }
   const reader = r.body.getReader();
   const decoder = new TextDecoder();
   let buf = "";
+  let terminal = false;
+  try {
   while (true) {
     const { done, value } = await reader.read();
-    if (done) break;
+    if (done) {
+      if (!terminal) throw new Error("连接提前结束，回答已中断");
+      break;
+    }
     buf += decoder.decode(value, { stream: true });
     let idx;
     while ((idx = buf.indexOf("\n\n")) >= 0) {
@@ -205,12 +224,16 @@ export async function streamChat(
       buf = buf.slice(idx + 2);
       for (const line of chunk.split("\n")) {
         if (line.startsWith("data: ")) {
-          try {
-            onEvent(JSON.parse(line.slice(6)));
-          } catch {}
+          const event = JSON.parse(line.slice(6)) as import("./types").ChatEvent;
+          if (["done", "error", "expand_request"].includes(event.event)) terminal = true;
+          await onEvent(event);
         }
       }
     }
+  }
+  } finally {
+    await reader.cancel().catch(() => {});
+    reader.releaseLock();
   }
 }
 

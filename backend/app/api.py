@@ -405,6 +405,13 @@ async def admin_documents(authorization: str | None = Header(default=None)):
     return {"documents": [db.document_public(r) for r in rows]}
 
 
+@router.get("/admin/documents/{doc_uid}/versions")
+async def admin_versions(doc_uid: str, authorization: str | None = Header(default=None)):
+    require_admin_token(db, authorization)
+    _doc_or_404(doc_uid)
+    return {"versions": ingest.version_history(db, doc_uid)}
+
+
 @router.post("/admin/documents/{doc_uid}/deactivate")
 async def admin_deactivate(doc_uid: str, authorization: str | None = Header(default=None)):
     require_admin_token(db, authorization)

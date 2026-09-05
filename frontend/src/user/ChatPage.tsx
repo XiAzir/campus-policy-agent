@@ -46,13 +46,25 @@ export default function ChatPage() {
   const [streamText, setStreamText] = useState("");
   const [showSettings, setShowSettings] = useState(false);
   const abortRef = useRef<AbortController | null>(null);
+  const busyRef = useRef(false);
   const reqIdRef = useRef<string>("");
   const bottomRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    idb.listChats().then(setChats);
+    idb.recoverInterrupted().then(rows => { setChats(rows); setCurrent(rows[0] || null); });
     idb.getPrefs().then((p) => p && setPrefs(p));
     api.catalog().then((r) => setCatalog(r.documents)).catch(() => {});
+    const interrupt = () => abortRef.current?.abort();
+    const visibility = () => { if (document.hidden) interrupt(); };
+    window.addEventListener("pagehide", interrupt);
+    window.addEventListener("offline", interrupt);
+    document.addEventListener("visibilitychange", visibility);
+    return () => {
+      interrupt();
+      window.removeEventListener("pagehide", interrupt);
+      window.removeEventListener("offline", interrupt);
+      document.removeEventListener("visibilitychange", visibility);
+    };
   }, []);
 
   useEffect(() => {
@@ -78,127 +90,118 @@ export default function ChatPage() {
   };
 
   const openChat = async (id: string) => {
+    if (busyRef.current) return;
     const c = await idb.getChat(id);
     if (c) setCurrent(c);
   };
 
-  const markInterrupted = async (chat: ChatRecord, partial: string) => {
-    if (partial.trim()) {
-      chat.messages.push(modelMessage(partial, [], true));
-      chat.updatedAt = Date.now();
+  const send = async () => {
+    const question = input.trim();
+    if (!question || busyRef.current) return;
+    if (prefs.scopeMode === "files" && prefs.docUids.length === 0) {
+      setStatus("请至少选择一份文件");
+      return;
+    }
+    busyRef.current = true;
+    setBusy(true);
+    setStatus("连接中…");
+    setInput("");
+    const chat = current ? structuredClone(current) : newChat();
+    const history = chat.messages.filter(m => !m.pending && !m.interrupted).map(m => ({ role: m.role, text: m.text }));
+    chat.messages.push(userMessage(question));
+    if (chat.title === "新的对话") chat.title = question.slice(0, 18);
+    const selectedPrefs = structuredClone(prefs);
+    let confirmed = false;
+    try {
       await saveChat(chat);
       setCurrent({ ...chat });
-    }
-  };
-
-  const send = async (questionOverride?: string, expandConfirmed = false) => {
-    const question = (questionOverride ?? input).trim();
-    if (!question || busy) return;
-    let chat = current;
-    if (!chat) {
-      chat = newChat();
-      setCurrent(chat);
-    }
-    if (!questionOverride) {
-      chat.messages.push(userMessage(question));
-      if (chat.title === "新的对话") chat.title = question.slice(0, 18);
-    }
-    chat.updatedAt = Date.now();
-    await saveChat(chat);
-    setCurrent({ ...chat });
-    setInput("");
-    setBusy(true);
-    setStreamText("");
-    setStatus("连接中…");
-
-    const scopeBody =
-      prefs.scopeMode === "files"
-        ? { mode: "files", doc_uids: prefs.docUids }
-        : prefs.scopeMode === "domains"
-          ? { mode: "domains", domains: prefs.domains, year_mode: prefs.yearMode, expand_confirmed: expandConfirmed }
-          : { mode: "auto" };
-
-    const body = {
-      question,
-      messages: chat.messages.slice(0, -1).map((m) => ({ role: m.role, text: m.text })),
-      scope: scopeBody,
-      profile: { college: prefs.college, entry_year: prefs.entryYear },
-    };
-
-    const ctrl = new AbortController();
-    abortRef.current = ctrl;
-    let citations: Citation[] = [];
-    let acc = "";
-
-    const handle = async (ev: ChatEvent) => {
-      switch (ev.event) {
-        case "queued":
-          setStatus(`排队中（第 ${ev.position} 位）…`);
-          reqIdRef.current = ev.request_id;
-          break;
-        case "started":
-          reqIdRef.current = ev.request_id;
-          setStatus("");
-          break;
-        case "retrieving":
-          setStatus("正在检索资料…");
-          break;
-        case "generating":
-          setStatus("");
-          break;
-        case "delta":
-          acc += ev.text;
-          setStreamText(acc);
-          break;
-        case "citations":
-          citations = ev.citations;
-          break;
-        case "expand_request": {
-          setBusy(false);
-          setStatus("");
-          const ok = window.confirm(`需要超出你指定的范围检索：\n${ev.reason}\n\n是否允许扩展到全部资料重新回答？`);
-          if (ok) {
-            updatePrefs({ scopeMode: "auto" });
-            await send(question, true);
-          } else {
-            if (acc.trim()) await markInterrupted(chat!, acc);
-            setStreamText("");
-          }
-          break;
+      for (;;) {
+        const reply = { ...modelMessage("", [], true), pending: true };
+        chat.messages.push(reply);
+        const persist = async () => {
+          chat.updatedAt = Date.now();
+          await saveChat(chat);
+          setCurrent({ ...chat });
+        };
+        await persist();
+        const ctrl = new AbortController();
+        abortRef.current = ctrl;
+        reqIdRef.current = "";
+        let expansionReason = "";
+        let terminal = false;
+        const scope = {
+          mode: selectedPrefs.scopeMode,
+          doc_uids: selectedPrefs.docUids,
+          domains: selectedPrefs.domains,
+          year_mode: selectedPrefs.yearMode,
+          expand_confirmed: confirmed,
+        };
+        try {
+          await streamChat({ question, messages: history, scope,
+            profile: { college: selectedPrefs.college, entry_year: selectedPrefs.entryYear } }, async (ev: ChatEvent) => {
+            switch (ev.event) {
+              case "queued":
+                reqIdRef.current = ev.request_id;
+                setStatus(`排队中（第 ${ev.position} 位）…`);
+                break;
+              case "started":
+                reqIdRef.current = ev.request_id;
+                setStatus("");
+                break;
+              case "retrieving": setStatus("正在检索资料…"); break;
+              case "generating": setStatus(""); break;
+              case "delta":
+                reply.text += ev.text;
+                // Persist before displaying: a closed page can recover every shown delta.
+                await persist();
+                break;
+              case "citations": reply.citations = ev.citations; await persist(); break;
+              case "done":
+                terminal = true;
+                reply.text = ev.text.trim();
+                reply.pending = false;
+                reply.interrupted = false;
+                await persist();
+                setStatus("");
+                break;
+              case "error":
+                terminal = true;
+                reply.pending = false;
+                reply.interrupted = true;
+                await persist();
+                setStatus(ev.message);
+                break;
+              case "expand_request":
+                terminal = true;
+                expansionReason = ev.reason;
+                reply.pending = false;
+                reply.interrupted = true;
+                await persist();
+                break;
+            }
+          }, ctrl.signal);
+          if (!terminal) throw new Error("连接提前结束，回答已中断");
+        } catch (e) {
+          reply.pending = false;
+          reply.interrupted = true;
+          await persist();
+          setStatus((e as Error).name === "AbortError" ? "已中断，部分回答已保留" : e instanceof Error ? e.message : "网络中断");
+        } finally {
+          if (abortRef.current === ctrl) abortRef.current = null;
         }
-        case "done": {
-          const text = ev.text.trim() || acc;
-          chat!.messages.push(modelMessage(text, citations));
-          chat!.updatedAt = Date.now();
-          await saveChat(chat!);
-          setCurrent({ ...chat! });
-          setStreamText("");
-          setBusy(false);
-          setStatus("");
-          break;
-        }
-        case "error": {
-          await markInterrupted(chat!, acc);
-          setStatus(ev.message);
-          setStreamText("");
-          setBusy(false);
-          break;
-        }
+        if (!expansionReason || ctrl.signal.aborted || confirmed) break;
+        const ok = window.confirm(`需要超出你指定的范围检索：\n${expansionReason}\n\n是否允许本次扩展到全部资料？`);
+        if (!ok) { setStatus("未扩展资料范围"); break; }
+        confirmed = true;
+        chat.messages.pop();
+        await persist();
       }
-    };
-
-    try {
-      await streamChat(body, handle, ctrl.signal);
     } catch (e) {
-      if ((e as Error).name === "AbortError") {
-        await markInterrupted(chat!, acc);
-        setStatus("连接已断开，部分回答已保留并标注「已中断」");
-      } else {
-        setStatus(e instanceof Error ? e.message : "网络错误");
-      }
+      setStatus(e instanceof Error ? e.message : "本地保存失败");
+    } finally {
+      busyRef.current = false;
       setBusy(false);
       setStreamText("");
-    } finally {
       abortRef.current = null;
     }
   };
@@ -222,6 +225,8 @@ export default function ChatPage() {
     try {
       const n = await idb.importAll(file);
       setChats(await idb.listChats());
+      const restored = await idb.getPrefs();
+      if (restored) { setPrefs(restored); prefsToStorage(restored); }
       alert(`已导入 ${n} 段对话`);
     } catch (e) {
       alert(e instanceof Error ? e.message : "导入失败");
@@ -237,6 +242,7 @@ export default function ChatPage() {
         <div className="side-head">
           <strong>班级政策问答</strong>
           <button
+            disabled={busy}
             onClick={async () => {
               const c = newChat();
               await saveChat(c);
@@ -256,6 +262,7 @@ export default function ChatPage() {
               <span className="chat-title">{c.title}</span>
               <button
                 className="mini"
+                disabled={busy}
                 title="删除"
                 onClick={async (e) => {
                   e.stopPropagation();
@@ -419,12 +426,13 @@ export default function ChatPage() {
           }}
         >
           <textarea
+            aria-label="问题"
             value={input}
             onChange={(e) => setInput(e.target.value)}
             placeholder="输入问题…（Enter 发送，Shift+Enter 换行）"
             rows={2}
             onKeyDown={(e) => {
-              if (e.key === "Enter" && !e.shiftKey) {
+              if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
                 e.preventDefault();
                 send();
               }

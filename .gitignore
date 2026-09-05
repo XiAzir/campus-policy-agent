@@ -21,3 +21,5 @@ work/
 *.zip
 测试文档/
 frontend/tsconfig.tsbuildinfo
+frontend/test-results/
+frontend/playwright-report/

@@ -201,6 +201,8 @@ def test_full_flow(client, real_package_bytes, tmp_path):
     assert txt.json()["lines"][0].startswith("L1:")
     assert client.get(f"/api/source/{uid}/file", headers=user_h).status_code == 200
     assert client.get(f"/api/source/{uid}/file").status_code == 401
+    assert client.get(f"/api/admin/documents/{uid}/versions", headers=ah).status_code == 200
+    assert client.get(f"/api/admin/documents/{uid}/versions", headers=user_h).status_code == 401
     # 7) 聊天 SSE：工具调用 → 证据引用 → 伪造引用被剔除
     body = {
         "question": "三下乡什么时候报名？",

@@ -1,4 +1,7 @@
 export interface CatalogDoc {
+  doc_hash: string;
+  replaces_doc_uid: string | null;
+  audience_scope: AudienceScope;
   doc_uid: string;
   title: string;
   doc_type: string;
@@ -25,6 +28,7 @@ export interface Citation {
 }
 
 export interface StoredMessage {
+  pending?: boolean;
   role: "user" | "model";
   text: string;
   citations: Citation[];
@@ -74,6 +78,7 @@ export interface SourceText {
 }
 
 export interface AdminPackageDoc {
+  audience_scope: AudienceScope;
   doc_hash: string;
   original_filename: string;
   doc_type: string;
@@ -121,4 +126,10 @@ export interface VersionInfo {
   deactivated_kind: string;
   is_current: boolean;
   package_id: number;
+}
+
+export interface AudienceScope {
+  confirmed?: boolean;
+  colleges?: string[];
+  entry_years?: string[];
 }

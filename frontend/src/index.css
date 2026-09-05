@@ -25,7 +25,7 @@ button.mini { padding: 0 6px; border: none; color: var(--muted); font-size: 12px
   padding: 6px 14px; border-radius: 6px; cursor: pointer; background: var(--panel);
 }
 a.button, .button-like { text-decoration: none; color: var(--text); display: inline-block; }
-input, textarea {
+input, textarea, select {
   border: 1px solid var(--line); border-radius: 6px; padding: 8px 10px; font-size: 14px;
   background: var(--panel); color: var(--text); width: 100%;
 }
@@ -95,6 +95,7 @@ input[type="checkbox"], input[type="radio"] { width: auto; }
 .modal {
   background: var(--panel); border-radius: 12px; padding: 20px 24px; width: 640px;
   max-height: 84vh; overflow-y: auto; box-shadow: 0 12px 40px rgba(0,0,0,0.18);
+  max-width: calc(100vw - 24px);
 }
 .modal.wide { width: 900px; }
 .modal-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; }
@@ -127,4 +128,18 @@ input[type="checkbox"], input[type="radio"] { width: auto; }
   .sidebar { width: 64px; }
   .sidebar .chat-title, .side-head strong { display: none; }
   .settings-grid { flex-direction: column; }
+  .admin { flex-direction: column; }
+  .admin .sidebar { width: 100%; height: auto; }
+  .admin .sidebar .chat-title { display: inline; }
+  .admin .sidebar .chat-list { display: flex; flex-wrap: wrap; }
+  .admin .side-head { display: none; }
+  .admin .side-foot { padding: 4px; }
+  .admin-main { padding: 12px; }
+  .admin .table { display: block; overflow-x: auto; }
+  .messages { padding: 12px; }
+  .composer { padding: 10px; gap: 6px; }
 }
+.msg, .quote-line, .line, .modal h3, .doc-meta { overflow-wrap: anywhere; }
+.msg { max-width: min(760px, 100%); }
+.row-actions label { min-width: 0; max-width: 100%; }
+button:disabled { cursor: not-allowed; opacity: 0.6; }

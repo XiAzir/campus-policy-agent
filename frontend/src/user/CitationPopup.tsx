@@ -12,6 +12,7 @@ export default function CitationPopup({
 }) {
   const [text, setText] = useState<Awaited<ReturnType<typeof api.sourceText>> | null>(null);
   const [error, setError] = useState("");
+  const [downloading, setDownloading] = useState(false);
   const ctxFrom = Math.max(1, citation.line_start - 3);
   const ctxTo = citation.line_end + 3;
   const ref = useRef<HTMLDivElement>(null);
@@ -67,9 +68,12 @@ export default function CitationPopup({
           </div>
         )}
         <div className="row-actions">
-          <a className="button" href={api.sourceFileUrl(citation.doc_uid)} target="_blank" rel="noreferrer">
-            下载原文件
-          </a>
+          <button disabled={downloading} onClick={async () => {
+            setDownloading(true);
+            try { await api.downloadSource(citation.doc_uid); }
+            catch (e) { setError(e instanceof Error ? e.message : "下载失败"); }
+            finally { setDownloading(false); }
+          }}>{downloading ? "下载中" : "下载原文件"}</button>
         </div>
       </div>
     </div>

@@ -29,14 +29,24 @@ function tx<T>(store: string, mode: IDBTransactionMode, fn: (s: IDBObjectStore) 
       new Promise<T>((resolve, reject) => {
         const t = db.transaction(store, mode);
         const req = fn(t.objectStore(store));
-        req.onsuccess = () => resolve(req.result);
         req.onerror = () => reject(req.error);
-        t.oncomplete = () => db.close();
+        t.oncomplete = () => { resolve(req.result); db.close(); };
+        t.onabort = () => { reject(t.error || new Error("本地数据事务已中止")); db.close(); };
       })
   );
 }
 
 export const idb = {
+  recoverInterrupted: async (): Promise<ChatRecord[]> => {
+    const chats = await idb.listChats();
+    for (const chat of chats) {
+      if (chat.messages.some(m => m.pending)) {
+        chat.messages.forEach(m => { if (m.pending) { m.pending = false; m.interrupted = true; } });
+        await idb.putChat(chat);
+      }
+    }
+    return chats;
+  },
   listChats: (): Promise<ChatRecord[]> =>
     tx<ChatRecord[]>("chats", "readonly", (s) => s.getAll() as IDBRequest<ChatRecord[]>).then((rows) =>
       rows.sort((a, b) => b.updatedAt - a.updatedAt)
