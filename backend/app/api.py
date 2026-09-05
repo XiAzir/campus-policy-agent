@@ -217,22 +217,24 @@ class ChatBody(BaseModel):
 
 def _turn_scope(scope: ScopeSpec) -> tuple[TurnScope, str]:
     note = ""
-    if scope.mode == "files" and scope.doc_uids and not scope.expand_confirmed:
-        allowed = allowed_doc_ids(db, doc_uids=scope.doc_uids)
+    if scope.mode == "files" and not scope.expand_confirmed:
+        if not scope.doc_uids:
+            raise HTTPException(400, "请至少选择一份文件")
+        allowed = allowed_doc_ids(db, doc_uids=scope.doc_uids, year_mode=scope.year_mode)
         if not allowed:
             raise HTTPException(400, "指定的资料不存在或已停用")
         note = f"用户明确指定了 {len(allowed)} 份文件，严格限定在此范围内"
-        return TurnScope(doc_ids=allowed, strict_files=True, strict_doc_uids=scope.doc_uids), note
+        return TurnScope(strict_files=True, strict_doc_uids=scope.doc_uids, year_mode=scope.year_mode), note
     if scope.mode == "domains" and scope.domains:
         allowed = allowed_doc_ids(db, year_mode=scope.year_mode, domains=scope.domains)
         note = f"用户选择领域：{'、'.join(scope.domains)}"
         if scope.expand_confirmed:
             allowed |= allowed_doc_ids(db, year_mode=scope.year_mode)
             note += "（用户已确认可扩展到全部资料）"
-        return TurnScope(doc_ids=allowed, year_mode=scope.year_mode), note
+        return TurnScope(domains=[] if scope.expand_confirmed else scope.domains, year_mode=scope.year_mode), note
     if scope.expand_confirmed:
         note = "用户已确认可扩展到全部资料"
-    return TurnScope(doc_ids=allowed_doc_ids(db, year_mode=scope.year_mode), year_mode=scope.year_mode), note
+    return TurnScope(year_mode=scope.year_mode), note
 
 
 @router.post("/chat")

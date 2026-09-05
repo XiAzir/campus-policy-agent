@@ -18,7 +18,7 @@ from .db import Database, utcnow
 from .pkgfmt import PackageError, validated_package, _validate_manifest
 from .storage import hash_file, require_space
 
-EDITABLE_FIELDS = {"title", "department", "effective_date", "audience", "notes", "replaces"}
+EDITABLE_FIELDS = {"title", "department", "effective_date", "audience", "audience_scope", "notes", "replaces"}
 
 
 class IngestError(Exception):
@@ -153,6 +153,7 @@ def _preview_validated(db, pkg, checked):
                 "department": meta.get("department", d["department"]),
                 "effective_date": meta.get("effective_date", d["effective_date"]),
                 "audience": meta.get("audience", d["audience"]),
+                "audience_scope": meta.get("audience_scope", d.get("audience_scope", {})),
                 "notes": meta.get("notes", d.get("notes", "")),
                 "replaces_doc_uid": target_uid,
                 "replaces_unresolved": bool(target) and target_uid is None,
@@ -305,6 +306,8 @@ def _commit_documents(db, package_id, docs, ov, replacements):
                 ),
             )
             doc_id = cur.lastrowid
+            conn.execute("UPDATE documents SET audience_scope=? WHERE id=?",
+                (json.dumps(meta.get("audience_scope", d.get("audience_scope", {})), ensure_ascii=False), doc_id))
             for sec in d.get("sections", []):
                 conn.execute(
                     "INSERT INTO sections(doc_id, section_id, title, start_line, end_line) VALUES(?,?,?,?,?)",
@@ -381,7 +384,7 @@ def enable_document(db: Database, doc_uid: str) -> None:
         raise IngestError("资料不存在")
     if row["deactivated_kind"] == "":
         return
-    if row["deactivated_kind"] == "superseded":
+    if row["deactivated_kind"] in ("superseded", "manual"):
         newer = db.one(
             "SELECT doc_uid, title FROM documents WHERE replaces_doc_id=?", (row["id"],)
         )

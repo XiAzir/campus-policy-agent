@@ -115,6 +115,11 @@ def _validate_manifest(manifest: dict) -> list[dict]:
             isinstance(a, str) and a.strip() for a in doc["audience"]
         ):
             raise PackageError(f"{where}.audience 不合法")
+        from .audience import validate_scope
+        try:
+            validate_scope(doc.get("audience_scope", {}))
+        except ValueError as exc:
+            raise PackageError(str(exc)) from exc
         if not isinstance(doc.get("line_count"), int) or doc["line_count"] < 1:
             raise PackageError(f"{where}.line_count 不合法")
         if not isinstance(doc.get("notes", ""), str) or len(doc.get("notes", "")) > 4000:

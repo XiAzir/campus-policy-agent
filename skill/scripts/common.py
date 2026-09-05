@@ -37,8 +37,17 @@ def sha256_file(path: Path) -> str:
     return h.hexdigest()
 
 
-def chunk_lines(lines: list[str]) -> list[dict]:
+def chunk_lines(lines: list[str], sections: list[dict] | None = None) -> list[dict]:
     """按空行分段，贪心合并段落到目标长度；chunk.text 与原文行区间逐字符一致。"""
+    if sections:
+        boundaries = sorted({1, len(lines) + 1, *(s["start_line"] for s in sections), *(s["end_line"] + 1 for s in sections)})
+        result = []
+        for start, end in zip(boundaries, boundaries[1:]):
+            for ch in chunk_lines(lines[start - 1:end - 1]):
+                ch["line_start"] += start - 1
+                ch["line_end"] += start - 1
+                result.append(ch)
+        return result
     paragraphs: list[tuple[int, int]] = []
     start = None
     has_content = False
@@ -68,7 +77,16 @@ def chunk_lines(lines: list[str]) -> list[dict]:
         plen = sum(len(lines[i - 1]) for i in range(s, e + 1))
         if plen > CHUNK_HARD_MAX:
             flush()
-            ranges.append((s, e))
+            block_start, chars = s, 0
+            for line_no in range(s, e + 1):
+                size = len(lines[line_no - 1])
+                if size > 4000:
+                    raise ValueError("单行原文超过 4000 字符，请管理员确认并在提取阶段按原文段落分行")
+                if chars and chars + size > CHUNK_HARD_MAX:
+                    ranges.append((block_start, line_no - 1))
+                    block_start, chars = line_no, 0
+                chars += size
+            ranges.append((block_start, e))
             continue
         if cur and cur_chars + plen > CHUNK_TARGET_CHARS and cur_chars >= CHUNK_MIN_CHARS:
             flush()

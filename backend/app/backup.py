@@ -64,6 +64,8 @@ def _check_snapshot(root):
         tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
         if not required <= tables:
             raise ValueError("备份数据库表结构不完整")
+        if "audience_scope" not in {r[1] for r in conn.execute("PRAGMA table_info(documents)")}:
+            raise ValueError("备份数据库缺少适用范围字段，请升级原实例后重新导出")
         if conn.execute("PRAGMA integrity_check").fetchone()[0] != "ok" or conn.execute("PRAGMA foreign_key_check").fetchone():
             raise ValueError("备份数据库完整性校验失败")
         files = _required_files(conn)

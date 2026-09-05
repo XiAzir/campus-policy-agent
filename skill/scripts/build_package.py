@@ -131,9 +131,9 @@ def main() -> int:
             )
 
         text_lines = (work / "standardized" / f"{h}.txt").read_text(encoding="utf-8").splitlines()
-        raw_chunks = chunk_lines(text_lines)
         # meta.json 可用 "sections" 覆盖自动检测的章节（如"一、二、三"式标题）
         sections = m.get("sections") or entry["sections"]
+        raw_chunks = chunk_lines(text_lines, sections)
         for ch in raw_chunks:
             ch["vector_index"] = vec_index
             vec_index += 1
@@ -141,7 +141,7 @@ def main() -> int:
                 (
                     s["section_id"]
                     for s in sections
-                    if s["start_line"] <= ch["line_start"] and ch["line_start"] <= s["end_line"] + 1
+                    if s["start_line"] <= ch["line_start"] and ch["line_end"] <= s["end_line"]
                 ),
                 None,
             )
@@ -162,6 +162,7 @@ def main() -> int:
                 "department": m["department"],
                 "effective_date": m.get("effective_date"),
                 "audience": m.get("audience", []),
+                "audience_scope": m.get("audience_scope", {}),
                 "domains": m.get("domains", []),
                 "replaces": m.get("replaces"),
                 "notes": m.get("notes", ""),

@@ -18,6 +18,7 @@ import numpy as np
 from .db import Database
 from .textutil import fts_match_query
 from .vectors import VectorIndex
+from .audience import match_audience
 
 RRF_K = 60
 TOP_K_FTS_FACTOR = 3
@@ -29,13 +30,16 @@ def allowed_doc_ids(
     year_mode: str = "current",
     domains: list[str] | None = None,
     doc_uids: list[str] | None = None,
+    profile: dict | None = None,
 ) -> set[int]:
     """按可见性（版本模式）、领域标签、明确文件限制过滤，返回 doc_id 集合。"""
     kinds = ("",) if year_mode != "past" else ("", "superseded")
     marks = ",".join("?" for _ in kinds)
     rows = db.q(
-        f"SELECT id, doc_uid FROM documents WHERE deactivated_kind IN ({marks})", kinds
+        f"SELECT * FROM documents WHERE deactivated_kind IN ({marks})", kinds
     )
+    if profile is not None:
+        rows = [r for r in rows if match_audience(r, profile)[0]]
     id_by_uid = {r["doc_uid"]: r["id"] for r in rows}
     if doc_uids:
         return {id_by_uid[u] for u in doc_uids if u in id_by_uid}
@@ -69,8 +73,14 @@ def read_lines(db: Database, doc_row: sqlite3.Row, line_start: int, line_end: in
         from .config import config as cfg
 
         path = cfg.data_dir / "text" / f"{doc_row['doc_hash']}.txt"
-    lines = path.read_text(encoding="utf-8").splitlines()
-    return lines[max(0, line_start - 1) : max(0, line_end)]
+    result = []
+    with path.open(encoding="utf-8") as source:
+        for number, line in enumerate(source, 1):
+            if number > line_end:
+                break
+            if number >= max(1, line_start):
+                result.append(line.rstrip("\r\n"))
+    return result
 
 
 def search(
@@ -80,12 +90,23 @@ def search(
     query_vec: np.ndarray | None,
     scope_doc_ids: set[int],
     top_k: int = 8,
+    domains: list[str] | None = None,
 ) -> list[dict]:
     """返回融合排序的证据列表（含文档与章节信息）。query 为空或范围为空返回空。"""
     if not query.strip() or not scope_doc_ids:
         return []
     id_marks = ",".join("?" for _ in scope_doc_ids)
     params: list = list(scope_doc_ids)
+    section_clause = ""
+    section_params = []
+    if domains:
+        tags = ",".join("?" for _ in domains)
+        section_clause = (
+            f" AND EXISTS (SELECT 1 FROM doc_tags t LEFT JOIN sections s ON s.doc_id=t.doc_id AND s.section_id=t.section_id"
+            f" WHERE t.doc_id=c.doc_id AND t.tag IN ({tags}) AND (t.section_id IS NULL OR"
+            " (c.line_start>=s.start_line AND c.line_end<=s.end_line)))"
+        )
+        section_params = domains
 
     fts_hits: list[tuple[int, float]] = []  # (chunk_id, rrf 前原始分)
     match = fts_match_query(query)
@@ -95,8 +116,9 @@ def search(
                 f"SELECT f.rowid AS chunk_id, bm25(chunks_fts) AS score "
                 f"FROM chunks_fts f JOIN chunks c ON c.id=f.rowid "
                 f"WHERE chunks_fts MATCH ? AND c.doc_id IN ({id_marks}) "
+                f"{section_clause} "
                 f"ORDER BY score LIMIT ?",
-                (match, *params, top_k * TOP_K_FTS_FACTOR),
+                (match, *params, *section_params, top_k * TOP_K_FTS_FACTOR),
             )
             fts_hits = [(r["chunk_id"], -float(r["score"])) for r in rows]
         except sqlite3.OperationalError:
@@ -105,8 +127,8 @@ def search(
     vec_hits: list[tuple[int, float]] = []
     if query_vec is not None:
         vrows = db.q(
-            f"SELECT package_id, row_index, chunk_id FROM vector_rows WHERE doc_id IN ({id_marks})",
-            params,
+            f"SELECT v.package_id, v.row_index, v.chunk_id FROM vector_rows v JOIN chunks c ON c.id=v.chunk_id WHERE v.doc_id IN ({id_marks}) {section_clause}",
+            [*params, *section_params],
         )
         candidates: dict[int, list[int]] = {}
         by_row: dict[tuple[int, int], int] = {}
@@ -157,6 +179,9 @@ def search(
                 "section_id": ch["section_id"],
                 "page": page_for_line(json.loads(doc["page_map"]) if doc["page_map"] else [], ch["line_start"]),
                 "text": ch["text"],
+                "audience": json.loads(doc["audience"]),
+                "audience_scope": json.loads(doc["audience_scope"]),
+                "effective_date": doc["effective_date"],
             }
         )
     return results

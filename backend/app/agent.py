@@ -24,6 +24,7 @@ from .db import Database
 from .llm import GeminiClient, LLMError, embed_query
 from .retrieval import allowed_doc_ids, page_for_line, read_lines, search
 from .vectors import VectorIndex
+from .audience import match_audience
 
 Emitter = Callable[[dict], Awaitable[None]]
 
@@ -41,6 +42,9 @@ TOOLS_DECL = [
                     "type": "OBJECT",
                     "properties": {
                         "query": {"type": "STRING", "description": "检索关键词或问句（中文，尽量具体）"},
+                        "domains": {"type": "ARRAY", "items": {"type": "STRING"}, "description": "自动模式下本次问题相关的领域；改变主题时重新选择"},
+                        "expand_domains": {"type": "BOOLEAN", "description": "已查询指定领域仍不足时扩展，必须说明 reason；不能绕过文件限制"},
+                        "reason": {"type": "STRING", "description": "需要跨领域的具体原因"},
                         "year_mode": {
                             "type": "STRING",
                             "enum": ["current", "past"],
@@ -89,6 +93,8 @@ SYSTEM_PROMPT = """你是"班级政策问答助手"，只依据资料库中检�
 ## 工具使用
 - 最多 3 轮工具调用，第 4 次模型回复不得再调用工具，必须基于已有证据作答或如实说明。
 - 默认查询现行有效资料；用户明确询问"往年/以前"的政策时，用 year_mode=past 检索（可命中因新版替代而停用的旧版）。
+- 自动模式可在 policy_search 中选择本次问题相关的 domains，不继承前一问题的主题。指定领域先检索该领域，需要扩展时用 expand_domains=true 并给出 reason。
+- 工具返回 clarification_required 时先追问；audience 与 audience_scope 是适用条件，不得将不适用的资料作为结论依据。
 - 被手动停用的资料不会出现在任何检索结果中，这是正常现象，不要向用户猜测原因。
 - 若用户限定了资料或领域而问题确实超出该范围，且未获得扩展许可时，输出标记 [[EXPAND_REQUEST:一段不超过50字的原因]] 并停止，不要给出范围外的答案。
 
@@ -113,10 +119,15 @@ def profile_block(profile: dict) -> str:
 
 @dataclass
 class TurnScope:
-    doc_ids: set[int] = field(default_factory=set)
     strict_files: bool = False
     strict_doc_uids: list[str] = field(default_factory=list)
     year_mode: str = "current"
+    domains: list[str] = field(default_factory=list)
+    profile: dict = field(default_factory=dict)
+    searched_domains: bool = False
+    expanded_domains: bool = False
+    expansion_reason: str = ""
+    clarification: set[str] = field(default_factory=set)
 
 
 class Agent:
@@ -129,19 +140,44 @@ class Agent:
         await self.gemini.close()
 
     # ---- 三个只读工具 ----
+    def allowed(self, scope, *, domains=None, with_profile=True):
+        return allowed_doc_ids(self.db, year_mode=scope.year_mode,
+            doc_uids=scope.strict_doc_uids if scope.strict_files else None,
+            domains=domains, profile=scope.profile if with_profile else None)
+
     async def tool_policy_search(self, args: dict, scope: TurnScope, evidence: list[dict]) -> dict:
         query = str(args.get("query", "")).strip()
         year_mode = args.get("year_mode") or scope.year_mode
         if not query:
             return {"error": "query 不能为空"}
-        if scope.strict_files:
-            allowed = scope.doc_ids
-        else:
-            allowed = allowed_doc_ids(self.db, year_mode=year_mode)
-            if scope.doc_ids:
-                allowed &= scope.doc_ids
+        if year_mode not in ("current", "past"):
+            return {"error": "year_mode 不合法"}
+        scope.year_mode = year_mode
+        domains = []
+        if not scope.strict_files:
+            domains = scope.domains if not scope.expanded_domains else []
+            if not scope.domains:
+                requested = args.get("domains", [])
+                if isinstance(requested, list):
+                    domains = [x for x in requested[:10] if isinstance(x, str)]
+            if args.get("expand_domains") and scope.domains:
+                reason = str(args.get("reason", "")).strip()[:160]
+                if not scope.searched_domains or not reason:
+                    return {"error": "先查询用户指定领域；扩展时须说明具体原因"}
+                domains = []
+                scope.expanded_domains = True
+                scope.expansion_reason = reason
+            if scope.domains:
+                scope.searched_domains = True
+        candidates = self.allowed(scope, domains=domains, with_profile=False)
+        for doc_id in candidates:
+            row = self.db.one("SELECT * FROM documents WHERE id=?", (doc_id,))
+            _, missing = match_audience(row, scope.profile)
+            scope.clarification.update(missing)
         qvec = await embed_query(query)
-        hits = search(self.db, self.vectors, query, qvec, allowed, top_k=8)
+        # Re-evaluate after the network await: an administrator may have disabled a file.
+        allowed = self.allowed(scope, domains=domains)
+        hits = search(self.db, self.vectors, query, qvec, allowed, top_k=8, domains=domains)
         out = []
         for h in hits:
             eid = f"EV{len(evidence) + 1}"
@@ -160,17 +196,23 @@ class Agent:
             out.append(
                 {
                     "evidence_id": eid,
+                    "doc_uid": h["doc_uid"],
                     "title": h["title"],
                     "lines": f"{h['line_start']}-{h['line_end']}",
-                    "excerpt": h["text"][:600],
+                    "line_start": h["line_start"], "line_end": h["line_end"],
+                    "audience": h["audience"], "audience_scope": h["audience_scope"],
+                    "effective_date": h["effective_date"],
+                    "excerpt": h["text"][:4000],
                 }
             )
+        if not out and scope.clarification:
+            return {"results": [], "clarification_required": sorted(scope.clarification), "note": "适用条件缺失，请追问，不能猜测适用对象"}
         if not out and scope.strict_files:
             return {
                 "results": [],
                 "note": "限定范围内未检索到相关内容。如需超出用户指定范围检索，请输出 [[EXPAND_REQUEST:原因]]，不要直接作答。",
             }
-        return {"results": out}
+        return {"results": out, "expanded_reason": scope.expansion_reason or None}
 
     async def tool_read_source(self, args: dict, scope: TurnScope, evidence: list[dict]) -> dict:
         doc_uid = str(args.get("doc_uid", ""))
@@ -181,16 +223,26 @@ class Agent:
             return {"error": "行号必须是整数"}
         if line_end < line_start:
             line_start, line_end = line_end, line_start
+        line_start = max(1, line_start)
         line_end = min(line_end, line_start + MAX_READ_LINES - 1)
         row = self.db.one("SELECT * FROM documents WHERE doc_uid=?", (doc_uid,))
         if row is None:
             return {"error": "资料不存在"}
         if row["deactivated_kind"] == "manual":
             return {"error": "该资料已被停用，不可读取"}
-        if row["id"] not in scope.doc_ids:
+        if row["id"] not in self.allowed(scope):
             return {
                 "error": "该资料不在本轮允许范围内；如确需读取，请输出 [[EXPAND_REQUEST:原因]]"
             }
+        if line_start > row["line_count"]:
+            return {"error": "行号越界"}
+        line_end = min(line_end, row["line_count"])
+        if scope.domains and not scope.expanded_domains and not scope.strict_files:
+            marks = ",".join("?" for _ in scope.domains)
+            tag = self.db.one(f"SELECT t.id FROM doc_tags t LEFT JOIN sections s ON s.doc_id=t.doc_id AND s.section_id=t.section_id WHERE t.doc_id=? AND t.tag IN ({marks}) AND (t.section_id IS NULL OR (s.start_line<=? AND s.end_line>=?))",
+                (row["id"], *scope.domains, line_start, line_end))
+            if not tag:
+                return {"error": "原文行超出所选领域章节，请先说明原因并扩展领域"}
         lines = read_lines(self.db, row, line_start, line_end)
         eid = f"EV{len(evidence) + 1}"
         evidence.append(
@@ -207,6 +259,7 @@ class Agent:
         )
         return {
             "evidence_id": eid,
+            "doc_uid": doc_uid,
             "title": row["title"],
             "lines": [
                 f"L{n}: {t}" for n, t in enumerate(lines, start=line_start)
@@ -216,11 +269,13 @@ class Agent:
     async def tool_get_versions(self, args: dict, scope: TurnScope, evidence: list[dict]) -> dict:
         doc_uid = str(args.get("doc_uid", ""))
         row = self.db.one("SELECT id FROM documents WHERE doc_uid=?", (doc_uid,))
-        if row is None:
+        if row is None or row["id"] not in self.allowed(scope):
             return {"error": "资料不存在"}
         from .ingest import version_history
 
-        return {"versions": version_history(self.db, doc_uid)}
+        allowed = self.allowed(scope)
+        uids = {r["doc_uid"] for r in self.db.q("SELECT id,doc_uid FROM documents") if r["id"] in allowed}
+        return {"versions": [v for v in version_history(self.db, doc_uid) if v["doc_uid"] in uids]}
 
     # ---- LangGraph 编排 ----
     async def run(
@@ -233,18 +288,23 @@ class Agent:
     ) -> dict:
         """返回 {"text":…, "citations":[…], "expand_request":…|None}。"""
         evidence: list[dict] = []
+        scope.profile = profile
         state: AgentState = {
             "contents": [*history, {"role": "user", "parts": [{"text": question}]}],
             "rounds": 0,
             "scope": scope,
             "evidence": evidence,
             "emit": emit,
-            "profile": profile,
+            "profile": {**profile, "scope_note": str(profile.get("scope_note", "")) + "；可用领域：" + "、".join(r["tag"] for r in self.db.q("SELECT DISTINCT t.tag FROM doc_tags t JOIN documents d ON d.id=t.doc_id WHERE d.deactivated_kind='' ORDER BY t.tag"))},
         }
         graph = self._build_graph()
         await emit({"event": "retrieving"})
         final_state = await graph.ainvoke(state, config={"recursion_limit": 12})
         text = final_state.get("answer_text", "")
+        if not evidence and scope.clarification:
+            text = "需要先确认适用条件：" + "、".join(sorted(scope.clarification)) + "。请补充后重新提问。"
+        if scope.expansion_reason:
+            text = "已扩展检索领域：" + scope.expansion_reason + "。\n\n" + text
 
         expand = EXPAND_RE.search(text)
         known = {e["evidence_id"] for e in evidence}

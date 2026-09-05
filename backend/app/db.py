@@ -45,6 +45,7 @@ CREATE TABLE IF NOT EXISTS documents (
   department TEXT NOT NULL,
   effective_date TEXT,
   audience TEXT NOT NULL DEFAULT '[]',
+  audience_scope TEXT NOT NULL DEFAULT '{}',
   notes TEXT NOT NULL DEFAULT '',
   line_count INTEGER NOT NULL,
   page_map TEXT,
@@ -123,6 +124,8 @@ class Database:
         self._conn.execute("PRAGMA foreign_keys=ON")
         self._conn.execute("PRAGMA synchronous=NORMAL")
         self._conn.executescript(SCHEMA)
+        if "audience_scope" not in {r[1] for r in self._conn.execute("PRAGMA table_info(documents)")}:
+            self._conn.execute("ALTER TABLE documents ADD COLUMN audience_scope TEXT NOT NULL DEFAULT '{}'")
         self._conn.commit()
 
     @contextmanager
@@ -204,6 +207,9 @@ class Database:
             "department": row["department"],
             "effective_date": row["effective_date"],
             "audience": json.loads(row["audience"]),
+            "audience_scope": json.loads(row["audience_scope"]),
+            "doc_hash": row["doc_hash"],
+            "replaces_doc_uid": (self.one("SELECT doc_uid FROM documents WHERE id=?", (row["replaces_doc_id"],)) or {"doc_uid": None})["doc_uid"],
             "domains": domains,
             "line_count": row["line_count"],
             "published_at": row["published_at"],
