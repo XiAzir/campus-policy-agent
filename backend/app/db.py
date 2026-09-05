@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import threading
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
@@ -112,6 +113,8 @@ def utcnow() -> str:
 
 class Database:
     def __init__(self, path: Path):
+        self.files_lock = threading.RLock()
+        self.sql_lock = threading.RLock()
         self.path = path
         path.parent.mkdir(parents=True, exist_ok=True)
         self._conn = sqlite3.connect(str(path), check_same_thread=False)
@@ -125,18 +128,21 @@ class Database:
     @contextmanager
     def tx(self):
         """写事务；异常自动回滚。"""
-        try:
-            yield self._conn
-            self._conn.commit()
-        except Exception:
-            self._conn.rollback()
-            raise
+        with self.sql_lock:
+            try:
+                yield self._conn
+                self._conn.commit()
+            except Exception:
+                self._conn.rollback()
+                raise
 
     def q(self, sql: str, params: tuple = ()) -> list[sqlite3.Row]:
-        return self._conn.execute(sql, params).fetchall()
+        with self.sql_lock:
+            return self._conn.execute(sql, params).fetchall()
 
     def one(self, sql: str, params: tuple = ()) -> sqlite3.Row | None:
-        return self._conn.execute(sql, params).fetchone()
+        with self.sql_lock:
+            return self._conn.execute(sql, params).fetchone()
 
     def setting_get(self, key: str) -> str | None:
         row = self.one("SELECT value FROM settings WHERE key=?", (key,))

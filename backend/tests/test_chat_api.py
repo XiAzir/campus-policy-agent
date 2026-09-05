@@ -262,3 +262,48 @@ def test_chat_queue_reject_when_full(client):
     assert r1.status_code == 200
     r2 = client.post("/api/chat", json=body, headers={**user_h, "X-Client-Id": client_id})
     assert r2.status_code == 200  # 前一个任务已结束并释放槽位
+
+
+def test_restore_reloads_token_signer(client):
+    from app import api
+    from app.security import Tokens
+
+    ah = _admin_headers(client)
+    client.put("/api/admin/access-code", json={"code": "restore-code"}, headers=ah)
+    archive = client.get("/api/admin/backup", headers=ah)
+    assert archive.status_code == 200
+    api.db.setting_set("token_secret", "ab" * 32)
+    api.tokens = Tokens(api.db)
+    ah = _admin_headers(client)
+    response = client.post("/api/admin/restore", files={"file": ("backup.zip", archive.content, "application/zip")}, headers=ah)
+    assert response.status_code == 200, response.text
+    login = client.post("/api/auth/login", json={"code": "restore-code"})
+    assert login.status_code == 200
+    assert client.get("/api/catalog", headers={"Authorization": "Bearer " + login.json()["token"]}).status_code == 200
+
+
+def test_restore_gate_blocks_new_requests(client):
+    from app.maintenance import maintenance
+    maintenance.restoring = True
+    try:
+        assert client.post("/api/auth/login", json={"code": "code"}).status_code == 503
+        assert client.get("/api/catalog").status_code == 503
+    finally:
+        maintenance.restoring = False
+
+
+def test_restore_cancels_running_and_waiting_jobs():
+    async def run():
+        mgr = ChatManager()
+        started = asyncio.Event()
+        async def runner(job):
+            started.set()
+            await asyncio.sleep(60)
+        first = await mgr.submit("one", runner)
+        await started.wait()
+        second = await mgr.submit("two", runner)
+        await mgr.cancel_all()
+        assert first.task.done()
+        assert not mgr._by_client and not mgr._waiting
+        assert any(e["event"] == "error" for e in [x async for x in drain(second)])
+    asyncio.run(run())

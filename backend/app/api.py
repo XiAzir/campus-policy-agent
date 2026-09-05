@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import shutil
 import tempfile
 import uuid
@@ -17,6 +18,7 @@ from fastapi import APIRouter, File, Header, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel, Field
 from starlette.background import BackgroundTask
+from starlette.concurrency import run_in_threadpool
 
 from . import backup as backup_mod
 from . import ingest
@@ -25,6 +27,8 @@ from .chat import ChatManager, ChatRejected, trim_history
 from .config import config
 from .db import Database, utcnow
 from .retrieval import allowed_doc_ids
+from .maintenance import maintenance
+from .storage import require_space
 from .security import (
     RateLimiter,
     Tokens,
@@ -460,8 +464,14 @@ async def admin_status(authorization: str | None = Header(default=None)):
 @router.get("/admin/backup")
 async def admin_backup(authorization: str | None = Header(default=None)):
     require_admin_token(db, authorization)
-    out = Path(tempfile.mkstemp(prefix="cpb-dl-", suffix=".zip")[1])
-    backup_mod.create_backup(db, out)
+    fd, name = tempfile.mkstemp(prefix="cpb-dl-", suffix=".zip", dir=config.data_dir.parent)
+    os.close(fd)
+    out = Path(name)
+    try:
+        await run_in_threadpool(backup_mod.create_backup, db, out)
+    except (ValueError, OSError) as exc:
+        out.unlink(missing_ok=True)
+        raise HTTPException(400, "备份失败：资料不完整或磁盘空间不足") from exc
     db.audit("admin", "backup_download")
 
     def _unlink_retry():
@@ -484,13 +494,42 @@ async def admin_backup(authorization: str | None = Header(default=None)):
 
 @router.post("/admin/restore")
 async def admin_restore(file: UploadFile = File(...), authorization: str | None = Header(default=None)):
+    global tokens
     require_admin_token(db, authorization)
-    data = await file.read()
+    fd, name = tempfile.mkstemp(prefix="cpb-restore-upload-", suffix=".zip", dir=config.data_dir.parent)
+    os.close(fd)
+    uploaded = Path(name)
+    context = None
+    entered = False
+    owns_maintenance = False
     try:
-        summary = backup_mod.restore_backup(
-            db, data, close_caches=lambda: agent.vectors.close_all()
-        )
+        with uploaded.open("wb") as target:
+            total = 0
+            while chunk := await file.read(1024 * 1024):
+                total += len(chunk)
+                if total > backup_mod.MAX_EXPANDED:
+                    raise ValueError("备份上传大小超限")
+                require_space(config.data_dir.parent, len(chunk))
+                target.write(chunk)
+        context = backup_mod.validated_backup(uploaded)
+        root, meta = await run_in_threadpool(context.__enter__)
+        entered = True
+        if maintenance.restoring:
+            raise HTTPException(409, "已有恢复任务")
+        maintenance.restoring = True
+        owns_maintenance = True
+        await chats.cancel_all()
+        async with asyncio.timeout(30):
+            await maintenance.drain()
+        summary = await run_in_threadpool(backup_mod.install_backup, db, root, meta, agent.vectors.close_all)
+        tokens = Tokens(db)
+        db.audit("admin", "backup_restore", f"docs={summary.get('documents')}")
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
-    db.audit("admin", "backup_restore", f"docs={summary.get('documents')}")
+    finally:
+        if owns_maintenance:
+            maintenance.restoring = False
+        if entered:
+            await run_in_threadpool(context.__exit__, None, None, None)
+        uploaded.unlink(missing_ok=True)
     return {"ok": True, "summary": summary}

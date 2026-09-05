@@ -120,6 +120,21 @@ class ChatManager:
         elif job in self._waiting:
             self._waiting.remove(job)
 
+    async def cancel_all(self):
+        async with self._lock:
+            jobs = list(self._by_client.values())
+            self._waiting.clear()
+            self._by_client.clear()
+            for job in jobs:
+                if job.task and not job.task.done():
+                    job.task.cancel()
+                elif job.task is None:
+                    job.queue.put_nowait({"event": "error", "message": "资料库恢复，问答已中断"})
+                    job.queue.put_nowait({"event": "__end__"})
+            tasks = [job.task for job in jobs if job.task]
+        await asyncio.gather(*tasks, return_exceptions=True)
+        self._running = None
+
 
 def trim_history(history: list[dict]) -> list[dict]:
     """保留最近 N 轮且总字符不超上限，自最旧截断。"""

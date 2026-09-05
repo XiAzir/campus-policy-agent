@@ -10,6 +10,7 @@ import json
 import re
 import shutil
 import uuid
+from functools import wraps
 from pathlib import Path
 
 from .config import config
@@ -23,10 +24,19 @@ class IngestError(Exception):
     pass
 
 
+def locked_files(fn):
+    @wraps(fn)
+    def wrapped(db, *args, **kwargs):
+        with db.files_lock:
+            return fn(db, *args, **kwargs)
+    return wrapped
+
+
 def package_path(package_sha: str) -> Path:
     return config.data_dir / "packages" / f"{package_sha}.zip"
 
 
+@locked_files
 def import_package(db: Database, data: bytes, original_filename: str) -> int:
     """校验并落盘为草稿；返回 package id。重复导入（包哈希一致）拒绝。"""
     try:
@@ -165,6 +175,7 @@ def preview_package(db: Database, package_id: int) -> dict | None:
     }
 
 
+@locked_files
 def publish_package(db: Database, package_id: int, replacements: dict[str, str | None]) -> None:
     """事务性发布。replacements: doc_hash → 被替代旧版的 doc_uid（或 null/缺省=不替代）。"""
     pkg = db.one("SELECT * FROM packages WHERE id=?", (package_id,))
@@ -200,7 +211,7 @@ def publish_package(db: Database, package_id: int, replacements: dict[str, str |
         for tname, text in texts.items():
             dest = text_dir / tname.replace("text/", "", 1)
             if not dest.exists():
-                dest.write_text(text, encoding="utf-8")
+                dest.write_text(text, encoding="utf-8", newline="")
     except OSError as exc:
         raise IngestError(f"落盘失败，发布中止：{exc}") from exc
 
