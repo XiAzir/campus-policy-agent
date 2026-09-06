@@ -56,6 +56,7 @@ test("work steps only show received stages and preserve interruption", () => {
 
 test("failed embedding is not marked complete when the model continues", async () => {
   render(<WorkSteps steps={[{ stage: "embedding", status: "failed" }, { stage: "composing" }]} />);
+  expect(screen.getByText("处理结束，部分步骤未完成").parentElement?.className).toBe("interrupted");
   await userEvent.click(screen.getByText("处理结束，部分步骤未完成"));
   expect(screen.getByText("生成查询向量（未完成）").className).toBe("error");
 });
