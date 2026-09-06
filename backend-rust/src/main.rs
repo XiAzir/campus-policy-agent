@@ -1,4 +1,4 @@
-use campus_policy_backend::api::{create_router, AppState};
+use campus_policy_backend::api::{AppState, create_router};
 use campus_policy_backend::auth::{RateLimiter, TokenService};
 use campus_policy_backend::config::Config;
 use campus_policy_backend::db::DbPool;
@@ -17,7 +17,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let db = DbPool::new(&db_path, 2, 64)?;
 
     // 初始化管理员密码（若尚未设置）
-    if db.setting_get("admin_password_hash".into()).await?.is_none() {
+    if db
+        .setting_get("admin_password_hash".into())
+        .await?
+        .is_none()
+    {
         let hash = campus_policy_backend::auth::hash_password(&config.initial_admin_password, None);
         db.setting_set("admin_password_hash".into(), hash).await?;
         db.audit(
@@ -41,7 +45,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     let tokens = TokenService::from_hex_secret(&secret, config.token_ttl_days)
-        .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+        .map_err(std::io::Error::other)?;
 
     let limiter = Arc::new(RateLimiter::new(10_000));
 

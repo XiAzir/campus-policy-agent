@@ -3,9 +3,8 @@ use serde_json::Value;
 use std::collections::HashSet;
 use std::sync::LazyLock;
 
-static RE_YEAR: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"^(\d{4})(?:级|年入学)$").expect("编译年份正则失败")
-});
+static RE_YEAR: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^(\d{4})(?:级|年入学)$").expect("编译年份正则失败"));
 
 static GENERAL_LABELS: LazyLock<HashSet<&'static str>> = LazyLock::new(|| {
     let mut s = HashSet::new();
@@ -23,7 +22,11 @@ pub fn extract_constraints(
 ) -> (Vec<String>, Vec<String>, bool) {
     // 1. 若 audience_scope 含有 confirmed == true，以 scope 为准
     if let Some(scope_obj) = audience_scope.as_object() {
-        if scope_obj.get("confirmed").and_then(|v| v.as_bool()).unwrap_or(false) {
+        let is_confirmed = scope_obj
+            .get("confirmed")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        if is_confirmed {
             let colleges = scope_obj
                 .get("colleges")
                 .and_then(|v| v.as_array())
@@ -63,7 +66,8 @@ pub fn extract_constraints(
                 if label.ends_with("学院") {
                     colleges.push(label.to_string());
                 } else if let Some(caps) = RE_YEAR.captures(label) {
-                    if let Some(m) = caps.get(1) {
+                    let maybe_match = caps.get(1);
+                    if let Some(m) = maybe_match {
                         years.push(m.as_str().to_string());
                     }
                 }

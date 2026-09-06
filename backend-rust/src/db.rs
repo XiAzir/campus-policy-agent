@@ -1,11 +1,11 @@
 use chrono::Utc;
-use rusqlite::{params, Connection, Result};
+use rusqlite::{Connection, Result, params};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::mpsc::{sync_channel, SyncSender};
+use std::path::Path;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::mpsc::{SyncSender, sync_channel};
 use std::thread;
 
 pub const SCHEMA: &str = r#"
@@ -129,11 +129,8 @@ fn open_connection(path: &Path, readonly: bool) -> Result<Connection> {
     Ok(conn)
 }
 
-type DbJob<T> = Box<dyn FnOnce(&mut Connection) -> Result<T> + Send + 'static>;
-
 enum JobMessage {
     Execute(Box<dyn FnOnce(&mut Connection) + Send + 'static>),
-    Shutdown,
 }
 
 #[derive(Clone)]
@@ -141,7 +138,6 @@ pub struct DbPool {
     writer_tx: SyncSender<JobMessage>,
     reader_txs: Vec<SyncSender<JobMessage>>,
     reader_cursor: Arc<AtomicUsize>,
-    path: PathBuf,
 }
 
 impl DbPool {
@@ -153,7 +149,7 @@ impl DbPool {
 
         // 初始化写连接并应用模式
         {
-            let mut conn = open_connection(path, false)?;
+            let conn = open_connection(path, false)?;
             conn.execute_batch(SCHEMA)?;
             // 兼容迁移 audience_scope
             let mut stmt = conn.prepare("PRAGMA table_info(documents)")?;
@@ -173,12 +169,10 @@ impl DbPool {
         thread::Builder::new()
             .name("sqlite-writer".to_string())
             .spawn(move || {
-                let mut conn = open_connection(&write_path, false)
-                    .expect("初始化写连接失败");
+                let mut conn = open_connection(&write_path, false).expect("初始化写连接失败");
                 while let Ok(msg) = writer_rx.recv() {
                     match msg {
                         JobMessage::Execute(job) => job(&mut conn),
-                        JobMessage::Shutdown => break,
                     }
                 }
             })
@@ -193,12 +187,10 @@ impl DbPool {
             thread::Builder::new()
                 .name(format!("sqlite-reader-{}", i))
                 .spawn(move || {
-                    let mut conn = open_connection(&read_path, true)
-                        .expect("初始化读连接失败");
+                    let mut conn = open_connection(&read_path, true).expect("初始化读连接失败");
                     while let Ok(msg) = rrx.recv() {
                         match msg {
                             JobMessage::Execute(job) => job(&mut conn),
-                            JobMessage::Shutdown => break,
                         }
                     }
                 })
@@ -209,7 +201,6 @@ impl DbPool {
             writer_tx,
             reader_txs,
             reader_cursor: Arc::new(AtomicUsize::new(0)),
-            path: path.to_path_buf(),
         })
     }
 
@@ -228,19 +219,19 @@ impl DbPool {
             let _ = result_tx.send(res);
         });
 
-        sender
-            .send(JobMessage::Execute(job))
-            .map_err(|_| rusqlite::Error::SqliteFailure(
+        sender.send(JobMessage::Execute(job)).map_err(|_| {
+            rusqlite::Error::SqliteFailure(
                 rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_BUSY),
                 Some("数据库读通道断开".to_string()),
-            ))?;
+            )
+        })?;
 
-        result_rx
-            .await
-            .map_err(|_| rusqlite::Error::SqliteFailure(
+        result_rx.await.map_err(|_| {
+            rusqlite::Error::SqliteFailure(
                 rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_BUSY),
                 Some("读任务应答失败".to_string()),
-            ))?
+            )
+        })?
     }
 
     /// 执行写操作
@@ -257,19 +248,19 @@ impl DbPool {
             let _ = result_tx.send(res);
         });
 
-        sender
-            .send(JobMessage::Execute(job))
-            .map_err(|_| rusqlite::Error::SqliteFailure(
+        sender.send(JobMessage::Execute(job)).map_err(|_| {
+            rusqlite::Error::SqliteFailure(
                 rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_BUSY),
                 Some("数据库写通道断开".to_string()),
-            ))?;
+            )
+        })?;
 
-        result_rx
-            .await
-            .map_err(|_| rusqlite::Error::SqliteFailure(
+        result_rx.await.map_err(|_| {
+            rusqlite::Error::SqliteFailure(
                 rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_BUSY),
                 Some("写任务应答失败".to_string()),
-            ))?
+            )
+        })?
     }
 
     /// 获取配置项
@@ -488,14 +479,16 @@ impl DbPool {
     /// 获取库中数量指标
     pub async fn get_counts(&self) -> Result<Counts> {
         self.read(|conn| {
-            let documents: i64 = conn.query_row("SELECT COUNT(*) FROM documents", [], |r| r.get(0))?;
+            let documents: i64 =
+                conn.query_row("SELECT COUNT(*) FROM documents", [], |r| r.get(0))?;
             let current: i64 = conn.query_row(
                 "SELECT COUNT(*) FROM documents WHERE deactivated_kind=''",
                 [],
                 |r| r.get(0),
             )?;
             let chunks: i64 = conn.query_row("SELECT COUNT(*) FROM chunks", [], |r| r.get(0))?;
-            let packages: i64 = conn.query_row("SELECT COUNT(*) FROM packages", [], |r| r.get(0))?;
+            let packages: i64 =
+                conn.query_row("SELECT COUNT(*) FROM packages", [], |r| r.get(0))?;
             Ok(Counts {
                 documents,
                 current,
@@ -618,14 +611,21 @@ mod tests {
         let pool = DbPool::new(&db_path, 2, 64).expect("初始化 DbPool 失败");
 
         // settings 读写测试
-        assert_eq!(pool.setting_get("admin_password_hash".into()).await.unwrap(), None);
+        assert_eq!(
+            pool.setting_get("admin_password_hash".into())
+                .await
+                .unwrap(),
+            None
+        );
 
         pool.setting_set("admin_password_hash".into(), "hash123".into())
             .await
             .unwrap();
 
         assert_eq!(
-            pool.setting_get("admin_password_hash".into()).await.unwrap(),
+            pool.setting_get("admin_password_hash".into())
+                .await
+                .unwrap(),
             Some("hash123".into())
         );
 
@@ -635,7 +635,9 @@ mod tests {
             .unwrap();
 
         assert_eq!(
-            pool.setting_get("admin_password_hash".into()).await.unwrap(),
+            pool.setting_get("admin_password_hash".into())
+                .await
+                .unwrap(),
             Some("hash456".into())
         );
 
@@ -659,24 +661,39 @@ mod tests {
         let pool = DbPool::new(legacy_db_path, 2, 64).expect("打开 Python legacy campus.db 失败");
 
         // 1. 验证 settings 可读
-        let admin_hash = pool.setting_get("admin_password_hash".into()).await.unwrap();
-        assert!(admin_hash.is_some(), "应读取到 Python 生成的 admin_password_hash");
+        let admin_hash = pool
+            .setting_get("admin_password_hash".into())
+            .await
+            .unwrap();
+        assert!(
+            admin_hash.is_some(),
+            "应读取到 Python 生成的 admin_password_hash"
+        );
 
         // 2. 验证 catalog 现行目录读取
         let catalog = pool.get_catalog().await.unwrap();
         assert_eq!(catalog.len(), 6, "Python 生成的 6 份现行文档应全部读出");
 
         // 检查其中一份文档字段
-        let first = catalog.iter().find(|d| d.title.contains("三下乡")).expect("应包含三下乡文档");
+        let first = catalog
+            .iter()
+            .find(|d| d.title.contains("三下乡"))
+            .expect("应包含三下乡文档");
         assert_eq!(first.doc_type, "txt");
         assert_eq!(first.department, "团委");
         assert_eq!(first.line_count, 4);
 
         // 3. 验证单篇文档查询与版本链
-        let doc_public = pool.get_document_public(first.doc_uid.clone()).await.unwrap();
+        let doc_public = pool
+            .get_document_public(first.doc_uid.clone())
+            .await
+            .unwrap();
         assert!(doc_public.is_some());
 
-        let versions = pool.get_version_history(first.doc_uid.clone()).await.unwrap();
+        let versions = pool
+            .get_version_history(first.doc_uid.clone())
+            .await
+            .unwrap();
         assert_eq!(versions.len(), 1);
         assert_eq!(versions[0].title, first.title);
         assert!(versions[0].is_current);

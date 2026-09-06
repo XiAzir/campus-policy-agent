@@ -1,4 +1,4 @@
-use campus_policy_backend::api::{create_router, AppState};
+use campus_policy_backend::api::{AppState, create_router};
 use campus_policy_backend::auth::{RateLimiter, TokenService};
 use campus_policy_backend::config::Config;
 use campus_policy_backend::db::DbPool;
@@ -17,7 +17,11 @@ async fn spawn_test_server() -> (String, String, String) {
     let mut config = Config::from_env(None);
     config.data_dir = Path::new("tests/fixtures/legacy_data").to_path_buf();
 
-    let secret = pool.setting_get("token_secret".into()).await.unwrap().unwrap();
+    let secret = pool
+        .setting_get("token_secret".into())
+        .await
+        .unwrap()
+        .unwrap();
     let tokens = TokenService::from_hex_secret(&secret, 30).unwrap();
     let limiter = Arc::new(RateLimiter::new(100));
 
@@ -48,7 +52,11 @@ async fn test_api_auth_state() {
     let (base_url, _, _) = spawn_test_server().await;
     let client = reqwest::Client::new();
 
-    let res = client.get(format!("{}/api/auth/state", base_url)).send().await.unwrap();
+    let res = client
+        .get(format!("{}/api/auth/state", base_url))
+        .send()
+        .await
+        .unwrap();
     assert_eq!(res.status(), 200);
     let body: Value = res.json().await.unwrap();
     assert_eq!(body["access_code_set"], true);
@@ -60,7 +68,11 @@ async fn test_api_catalog_requires_auth() {
     let client = reqwest::Client::new();
 
     // 1. 无 token 访问应 401
-    let res_no_auth = client.get(format!("{}/api/catalog", base_url)).send().await.unwrap();
+    let res_no_auth = client
+        .get(format!("{}/api/catalog", base_url))
+        .send()
+        .await
+        .unwrap();
     assert_eq!(res_no_auth.status(), 401);
 
     // 2. 带有效 token 访问应 200 并返回 6 篇文档
@@ -100,7 +112,10 @@ async fn test_api_source_text_window_and_clamp() {
 
     // 闭区间请求 frm=1, to=250 -> 保护约束 to 最多 frm+200，实际返回 201 行
     let res_text = client
-        .get(format!("{}/api/source/{}/text?frm=1&to=250", base_url, long_uid))
+        .get(format!(
+            "{}/api/source/{}/text?frm=1&to=250",
+            base_url, long_uid
+        ))
         .header(AUTHORIZATION, format!("Bearer {}", user_token))
         .send()
         .await
@@ -136,7 +151,10 @@ async fn test_api_source_file_download() {
         .unwrap();
 
     assert_eq!(res_file.status(), 200);
-    assert_eq!(res_file.headers().get("X-Content-Type-Options").unwrap(), "nosniff");
+    assert_eq!(
+        res_file.headers().get("X-Content-Type-Options").unwrap(),
+        "nosniff"
+    );
     let bytes = res_file.bytes().await.unwrap();
     assert!(!bytes.is_empty());
 }
