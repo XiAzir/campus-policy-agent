@@ -147,7 +147,7 @@ class Agent:
             doc_uids=scope.strict_doc_uids if scope.strict_files else None,
             domains=domains, profile=scope.profile if with_profile else None)
 
-    async def tool_policy_search(self, args: dict, scope: TurnScope, evidence: list[dict]) -> dict:
+    async def tool_policy_search(self, args: dict, scope: TurnScope, evidence: list[dict], emit: Emitter | None = None) -> dict:
         query = str(args.get("query", "")).strip()
         year_mode = args.get("year_mode") or scope.year_mode
         if not query:
@@ -177,7 +177,11 @@ class Agent:
             _, missing = match_audience(row, scope.profile)
             scope.clarification.update(missing)
         started = time.monotonic()
+        if emit:
+            await emit({"event": "stage", "stage": "embedding"})
         qvec = await embed_query(query)
+        if emit:
+            await emit({"event": "stage", "stage": "searching"})
         # Re-evaluate after the network await: an administrator may have disabled a file.
         allowed = self.allowed(scope, domains=domains)
         hits = search(self.db, self.vectors, query, qvec, allowed, top_k=8, domains=domains)
@@ -303,7 +307,6 @@ class Agent:
             "profile": {**profile, "scope_note": str(profile.get("scope_note", "")) + "；可用领域：" + "、".join(r["tag"] for r in self.db.q("SELECT DISTINCT t.tag FROM doc_tags t JOIN documents d ON d.id=t.doc_id WHERE d.deactivated_kind='' ORDER BY t.tag"))},
         }
         graph = self._build_graph()
-        await emit({"event": "retrieving"})
         final_state = await graph.ainvoke(state, config={"recursion_limit": 12})
         text = final_state.get("answer_text", "")
         if not evidence and scope.clarification:
@@ -313,6 +316,7 @@ class Agent:
 
         expand = EXPAND_RE.search(text)
         known = {e["evidence_id"] for e in evidence}
+        await emit({"event": "stage", "stage": "verifying"})
         text = MARKER_RE.sub(lambda m: m.group(0) if m.group(1) in known else "", text)
         citations = self._collect_citations(evidence, text)
         if expand:
@@ -327,6 +331,7 @@ class Agent:
             emit = state["emit"]
             force_final = state["rounds"] >= config.chat_max_tool_rounds
             await emit({"event": "generating"})
+            await emit({"event": "stage", "stage": "analyzing" if state["rounds"] == 0 else "composing"})
             text_acc: list[str] = []
             parts: list[dict] = []
             try:
@@ -348,6 +353,7 @@ class Agent:
             return {"contents": state["contents"] + [{"role": "model", "parts": parts}], "answer_text": "".join(text_acc)}
 
         async def tools_node(state: AgentState) -> dict:
+            emit = state["emit"]
             last = state["contents"][-1]["parts"]
             calls = [p["functionCall"] for p in last if "functionCall" in p]
             fr_parts = []
@@ -357,10 +363,13 @@ class Agent:
                 result: dict[str, Any]
                 try:
                     if name == "policy_search":
-                        result = await self.tool_policy_search(args, state["scope"], state["evidence"])
+                        await emit({"event": "retrieving"})
+                        result = await self.tool_policy_search(args, state["scope"], state["evidence"], emit)
                     elif name == "read_source":
+                        await emit({"event": "stage", "stage": "reading"})
                         result = await self.tool_read_source(args, state["scope"], state["evidence"])
                     elif name == "get_versions":
+                        await emit({"event": "stage", "stage": "versions"})
                         result = await self.tool_get_versions(args, state["scope"], state["evidence"])
                     else:
                         result = {"error": f"未知工具 {name}"}

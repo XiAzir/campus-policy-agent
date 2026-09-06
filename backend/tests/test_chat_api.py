@@ -224,6 +224,9 @@ def test_full_flow(client, real_package_bytes, tmp_path):
     kinds = [e["event"] for e in events]
     assert "metrics" in kinds
     assert "retrieving" in kinds and "generating" in kinds
+    stages = [e for e in events if e["event"] == "stage"]
+    assert stages == [{"event": "stage", "stage": s} for s in
+                      ["analyzing", "embedding", "searching", "composing", "verifying"]]
     done = next(e for e in events if e["event"] == "done")
     assert "[[EV99]]" not in done["text"]
     assert "[[EV1]]" in done["text"]

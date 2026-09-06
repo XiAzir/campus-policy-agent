@@ -28,6 +28,7 @@ export interface Citation {
 }
 
 export interface StoredMessage {
+  steps?: WorkStep[];
   pending?: boolean;
   role: "user" | "model";
   text: string;
@@ -53,7 +54,14 @@ export interface UserPrefs {
   yearMode: "current" | "past";
 }
 
+export type WorkStage = "analyzing" | "embedding" | "searching" | "reading" | "versions" | "composing" | "verifying";
+
+export interface WorkStep {
+  stage: WorkStage;
+}
+
 export type ChatEvent =
+  | { event: "stage"; stage: WorkStage }
   | { event: "metrics"; retrieval_s: number; model_calls: number; embedding_calls: number }
   | { event: "queued"; position: number; request_id: string }
   | { event: "started"; request_id: string }

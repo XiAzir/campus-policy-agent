@@ -45,6 +45,47 @@ def test_auto_past_includes_old_and_tool_chain_has_ids(agent):
     asyncio.run(run())
 
 
+def test_search_stages_follow_real_embedding_and_failure(agent, monkeypatch):
+    from app.llm import LLMError
+
+    events = []
+
+    async def emit(event):
+        events.append(event)
+
+    async def fail_embed(*args):
+        assert events == [{"event": "stage", "stage": "embedding"}]
+        raise LLMError("测试上游失败")
+
+    monkeypatch.setattr("app.agent.embed_query", fail_embed)
+    with pytest.raises(LLMError):
+        asyncio.run(agent.tool_policy_search({"query": "三下乡"}, TurnScope(), [], emit))
+    assert events == [{"event": "stage", "stage": "embedding"}]
+
+
+def test_no_tool_call_does_not_claim_retrieval(agent):
+    events = []
+
+    class NoTools:
+        async def stream(self, *args, **kwargs):
+            yield {"type": "text", "text": "请补充问题"}
+            yield {"type": "parts", "parts": [{"text": "请补充问题"}]}
+
+    async def run():
+        original = agent.gemini
+        agent.gemini = NoTools()
+        async def emit(event):
+            events.append(event)
+        try:
+            await agent.run([], "你好", TurnScope(), {}, emit)
+        finally:
+            agent.gemini = original
+
+    asyncio.run(run())
+    assert "retrieving" not in [event["event"] for event in events]
+    assert [event["stage"] for event in events if event["event"] == "stage"] == ["analyzing", "verifying"]
+
+
 @pytest.mark.parametrize("during_embed", [False, True])
 def test_manual_disable_rechecked_for_queued_file_request(agent, monkeypatch, during_embed):
     doc = agent.db.one("SELECT * FROM documents LIMIT 1")
