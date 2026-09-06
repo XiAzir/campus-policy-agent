@@ -396,9 +396,11 @@ pub async fn search(
 
 #[cfg(test)]
 mod tests {
+    use super::*;
     use crate::tokenizer::tokenize_for_fts;
     use rusqlite::Connection;
     use serde_json::Value;
+    use std::collections::HashMap;
     use std::fs;
     use std::path::Path;
 
@@ -470,5 +472,40 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[tokio::test]
+    async fn test_hybrid_search_with_legacy_fixtures() {
+        let legacy_data_dir = Path::new("tests/fixtures/legacy_data");
+        let db_path = legacy_data_dir.join("campus.db");
+        if !db_path.exists() {
+            return;
+        }
+
+        let db = DbPool::new(&db_path, 2, 64).unwrap();
+        let vectors = VectorIndex::new(legacy_data_dir.join("vectors"));
+
+        // 1. 测试 allowed_doc_ids（现行过滤 + 画像过滤）
+        let all_current = allowed_doc_ids(&db, "current", None, None, None).await.unwrap();
+        assert_eq!(all_current.len(), 6);
+
+        let mut profile = HashMap::new();
+        profile.insert("college".to_string(), "信息工程学院".to_string());
+        profile.insert("entry_year".to_string(), "2025".to_string());
+
+        let profile_ids = allowed_doc_ids(&db, "current", None, None, Some(&profile)).await.unwrap();
+        assert_eq!(profile_ids.len(), 6, "全校通用文档在具体学生画像下应全部保留");
+
+        // 2. 混合检索（FTS 命中）
+        let hits = search(&db, &vectors, "三下乡 报名", None, &all_current, 5, None).await.unwrap();
+        assert!(!hits.is_empty(), "三下乡报名应能命中结果");
+        assert!(hits[0].title.contains("三下乡"));
+        assert!(hits[0].score > 0.0);
+
+        // 3. 混合检索（带向量融合）
+        let dummy_vec = vec![0.0f32; 1024]; // 1024 维零向量
+        let hits_with_vec = search(&db, &vectors, "三下乡 报名", Some(&dummy_vec), &all_current, 5, None).await.unwrap();
+        assert!(!hits_with_vec.is_empty());
+        assert_eq!(hits_with_vec[0].doc_uid, hits[0].doc_uid);
     }
 }
