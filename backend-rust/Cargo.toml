@@ -32,6 +32,7 @@ reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"
 # 系统指标与时间
 chrono = { version = "0.4", features = ["serde"] }
 sysinfo = "0.33"
+urlencoding = "2.1"
 
 # 分词（Spec 7.1，预留）
 jieba-rs = "0.7"
