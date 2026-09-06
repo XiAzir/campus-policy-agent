@@ -4,8 +4,8 @@ pub mod handlers;
 use crate::auth::{RateLimiter, TokenService};
 use crate::config::Config;
 use crate::db::DbPool;
-use axum::routing::{get, post, put};
 use axum::Router;
+use axum::routing::{get, post, put};
 use std::sync::Arc;
 use tower_http::services::ServeDir;
 
@@ -28,7 +28,10 @@ pub fn create_router(state: AppState) -> Router {
         .route("/source/{doc_uid}/file", get(handlers::source_file))
         .route("/source/{doc_uid}/versions", get(handlers::source_versions))
         .route("/admin/documents", get(handlers::admin_documents))
-        .route("/admin/documents/{doc_uid}/versions", get(handlers::admin_versions))
+        .route(
+            "/admin/documents/{doc_uid}/versions",
+            get(handlers::admin_versions),
+        )
         .route("/admin/access-code", put(handlers::admin_set_access_code))
         .route("/admin/status", get(handlers::admin_status))
         .route("/admin/metrics", get(handlers::admin_metrics));

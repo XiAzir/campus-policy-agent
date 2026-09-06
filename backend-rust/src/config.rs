@@ -88,7 +88,9 @@ impl Config {
         }
 
         Self {
-            gemini_base_url: get_env_or("GEMINI_BASE_URL", "").trim_end_matches('/').to_string(),
+            gemini_base_url: get_env_or("GEMINI_BASE_URL", "")
+                .trim_end_matches('/')
+                .to_string(),
             gemini_api_key: get_env_or("GEMINI_API_KEY", ""),
             gemini_model: get_env_or("GEMINI_MODEL", ""),
 
@@ -131,7 +133,10 @@ impl Config {
             missing.push("GEMINI_MODEL");
         }
         if !missing.is_empty() {
-            return Err(format!("缺少主模型配置：{}（应在环境中配置）", missing.join(", ")));
+            return Err(format!(
+                "缺少主模型配置：{}（应在环境中配置）",
+                missing.join(", ")
+            ));
         }
         if self.siliconflow_api_key.is_empty() {
             return Err("缺少 SILICONFLOW_API_KEY（查询侧向量化需要）".to_string());
@@ -156,21 +161,57 @@ mod tests {
         // 在无环境变量覆盖的情况下构造默认 Config
         let cfg = Config::from_env(None);
 
-        assert_eq!(cfg.token_ttl_days, fixture["token_ttl_days"].as_i64().unwrap());
-        assert_eq!(cfg.chat_concurrency, fixture["chat_concurrency"].as_u64().unwrap() as usize);
-        assert_eq!(cfg.chat_queue_max, fixture["chat_queue_max"].as_u64().unwrap() as usize);
-        assert_eq!(cfg.chat_history_max_rounds, fixture["chat_history_max_rounds"].as_u64().unwrap() as usize);
-        assert_eq!(cfg.chat_history_max_chars, fixture["chat_history_max_chars"].as_u64().unwrap() as usize);
-        assert_eq!(cfg.chat_request_timeout_s, fixture["chat_request_timeout_s"].as_u64().unwrap());
-        assert_eq!(cfg.chat_max_tool_rounds, fixture["chat_max_tool_rounds"].as_u64().unwrap() as usize);
-        assert_eq!(cfg.max_package_mb, fixture["max_package_mb"].as_u64().unwrap() as usize);
+        assert_eq!(
+            cfg.token_ttl_days,
+            fixture["token_ttl_days"].as_i64().unwrap()
+        );
+        assert_eq!(
+            cfg.chat_concurrency,
+            fixture["chat_concurrency"].as_u64().unwrap() as usize
+        );
+        assert_eq!(
+            cfg.chat_queue_max,
+            fixture["chat_queue_max"].as_u64().unwrap() as usize
+        );
+        assert_eq!(
+            cfg.chat_history_max_rounds,
+            fixture["chat_history_max_rounds"].as_u64().unwrap() as usize
+        );
+        assert_eq!(
+            cfg.chat_history_max_chars,
+            fixture["chat_history_max_chars"].as_u64().unwrap() as usize
+        );
+        assert_eq!(
+            cfg.chat_request_timeout_s,
+            fixture["chat_request_timeout_s"].as_u64().unwrap()
+        );
+        assert_eq!(
+            cfg.chat_max_tool_rounds,
+            fixture["chat_max_tool_rounds"].as_u64().unwrap() as usize
+        );
+        assert_eq!(
+            cfg.max_package_mb,
+            fixture["max_package_mb"].as_u64().unwrap() as usize
+        );
         assert_eq!(cfg.disk_warn_gb, fixture["disk_warn_gb"].as_f64().unwrap());
-        assert_eq!(cfg.max_upload_body_mb, fixture["max_upload_body_mb"].as_u64().unwrap() as usize);
-        assert_eq!(cfg.embed_dims, fixture["embed_dims"].as_u64().unwrap() as usize);
-        assert_eq!(cfg.preprocessing_version, fixture["preprocessing_version"].as_str().unwrap());
+        assert_eq!(
+            cfg.max_upload_body_mb,
+            fixture["max_upload_body_mb"].as_u64().unwrap() as usize
+        );
+        assert_eq!(
+            cfg.embed_dims,
+            fixture["embed_dims"].as_u64().unwrap() as usize
+        );
+        assert_eq!(
+            cfg.preprocessing_version,
+            fixture["preprocessing_version"].as_str().unwrap()
+        );
         assert_eq!(cfg.host, fixture["host"].as_str().unwrap());
         assert_eq!(cfg.port, fixture["port"].as_u64().unwrap() as u16);
-        assert_eq!(cfg.initial_admin_password, fixture["initial_admin_password"].as_str().unwrap());
+        assert_eq!(
+            cfg.initial_admin_password,
+            fixture["initial_admin_password"].as_str().unwrap()
+        );
     }
 
     #[test]

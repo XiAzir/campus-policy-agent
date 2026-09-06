@@ -1,5 +1,5 @@
-use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use hmac::{Hmac, Mac};
 use pbkdf2::pbkdf2_hmac;
 use rand::RngCore;
@@ -27,8 +27,17 @@ pub fn hash_password(password: &str, salt: Option<&[u8]>) -> String {
         }
     };
     let mut output = [0u8; DIGEST_LEN];
-    pbkdf2_hmac::<Sha256>(password.as_bytes(), actual_salt, PBKDF2_ITERATIONS, &mut output);
-    format!("pbkdf2${}${}", hex::encode(actual_salt), hex::encode(output))
+    pbkdf2_hmac::<Sha256>(
+        password.as_bytes(),
+        actual_salt,
+        PBKDF2_ITERATIONS,
+        &mut output,
+    );
+    format!(
+        "pbkdf2${}${}",
+        hex::encode(actual_salt),
+        hex::encode(output)
+    )
 }
 
 /// 验证口令，常量时间比对
@@ -67,7 +76,8 @@ pub struct TokenService {
 
 impl TokenService {
     pub fn from_hex_secret(secret_hex: &str, ttl_days: i64) -> Result<Self, String> {
-        let key = hex::decode(secret_hex).map_err(|e| format!("token_secret 并非合法 hex: {}", e))?;
+        let key =
+            hex::decode(secret_hex).map_err(|e| format!("token_secret 并非合法 hex: {}", e))?;
         Ok(Self { key, ttl_days })
     }
 
@@ -114,10 +124,13 @@ impl TokenService {
         }
 
         // 解码 payload（使用 URL_SAFE 支持可选 padding）
-        let payload_bytes = URL_SAFE_NO_PAD.decode(raw).or_else(|_| {
-            // 兼容可能带 padding 的情况
-            base64::engine::general_purpose::URL_SAFE.decode(raw)
-        }).ok()?;
+        let payload_bytes = URL_SAFE_NO_PAD
+            .decode(raw)
+            .or_else(|_| {
+                // 兼容可能带 padding 的情况
+                base64::engine::general_purpose::URL_SAFE.decode(raw)
+            })
+            .ok()?;
 
         let payload: TokenPayload = serde_json::from_slice(&payload_bytes).ok()?;
 
@@ -206,13 +219,25 @@ mod tests {
             assert_eq!(generated, expected_stored, "口令生成 hash 不匹配: {}", pwd);
 
             // 验证测试
-            assert!(verify_password(pwd, expected_stored), "口令验证应成功: {}", pwd);
-            assert!(!verify_password(&format!("{}_wrong", pwd), expected_stored), "错误口令应失败: {}", pwd);
+            assert!(
+                verify_password(pwd, expected_stored),
+                "口令验证应成功: {}",
+                pwd
+            );
+            assert!(
+                !verify_password(&format!("{}_wrong", pwd), expected_stored),
+                "错误口令应失败: {}",
+                pwd
+            );
         }
 
         for mal in fixture["malformed"].as_array().unwrap() {
             let mal_str = mal.as_str().unwrap();
-            assert!(!verify_password("any", mal_str), "畸形哈希应拒绝: {}", mal_str);
+            assert!(
+                !verify_password("any", mal_str),
+                "畸形哈希应拒绝: {}",
+                mal_str
+            );
         }
     }
 
@@ -235,16 +260,30 @@ mod tests {
             if expired {
                 assert!(verified.is_none(), "过期令牌应被拒绝: {}", token);
             } else {
-                assert_eq!(verified.as_deref(), Some(expected_cid), "未过期令牌验签 client_id 应一致");
+                assert_eq!(
+                    verified.as_deref(),
+                    Some(expected_cid),
+                    "未过期令牌验签 client_id 应一致"
+                );
                 // 角色不匹配应拒绝
-                let wrong_role = if expected_role == "user" { "admin" } else { "user" };
-                assert!(token_service.verify(token, wrong_role).is_none(), "错误角色应被拒绝");
+                let wrong_role = if expected_role == "user" {
+                    "admin"
+                } else {
+                    "user"
+                };
+                assert!(
+                    token_service.verify(token, wrong_role).is_none(),
+                    "错误角色应被拒绝"
+                );
             }
         }
 
         // 被篡改的令牌
         let tampered = fixture["tampered_token"].as_str().unwrap();
-        assert!(token_service.verify(tampered, "user").is_none(), "篡改令牌应被拒绝");
+        assert!(
+            token_service.verify(tampered, "user").is_none(),
+            "篡改令牌应被拒绝"
+        );
     }
 
     #[test]

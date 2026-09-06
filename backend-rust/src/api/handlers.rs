@@ -1,12 +1,12 @@
-use crate::api::error::{ApiError, ApiResult};
 use crate::api::AppState;
+use crate::api::error::{ApiError, ApiResult};
 use crate::auth::{hash_password, verify_password};
 use crate::db::utcnow;
-use axum::extract::{Path, Query, State};
-use axum::http::header::{HeaderMap, HeaderValue, CONTENT_DISPOSITION, CONTENT_TYPE};
-use axum::http::StatusCode;
-use axum::response::{IntoResponse, Response};
 use axum::Json;
+use axum::extract::{Path, Query, State};
+use axum::http::StatusCode;
+use axum::http::header::{CONTENT_DISPOSITION, CONTENT_TYPE, HeaderMap, HeaderValue};
+use axum::response::{IntoResponse, Response};
 use serde::Deserialize;
 use serde_json::json;
 use std::fs::File;
@@ -56,7 +56,9 @@ pub async fn auth_state(State(state): State<AppState>) -> ApiResult<Json<serde_j
         .setting_get("access_code_hash".to_string())
         .await
         .map_err(|e| ApiError::internal(e.to_string()))?;
-    Ok(Json(json!({ "access_code_set": access_code_hash.is_some() })))
+    Ok(Json(
+        json!({ "access_code_set": access_code_hash.is_some() }),
+    ))
 }
 
 #[derive(Deserialize)]
@@ -83,7 +85,9 @@ pub async fn login(
         .map_err(|e| ApiError::internal(e.to_string()))?;
 
     let Some(hash) = stored else {
-        return Err(ApiError::bad_request("访问码尚未设置，请联系管理员在管理端设置"));
+        return Err(ApiError::bad_request(
+            "访问码尚未设置，请联系管理员在管理端设置",
+        ));
     };
 
     if !verify_password(&body.code, &hash) {
@@ -126,14 +130,20 @@ pub async fn admin_login(
     if !verify_password(&body.password, &hash) {
         let _ = state
             .db
-            .audit("system".into(), "admin_login_failed".into(), format!("ip={}", ip))
+            .audit(
+                "system".into(),
+                "admin_login_failed".into(),
+                format!("ip={}", ip),
+            )
             .await;
         return Err(ApiError::unauthorized("管理员密码不正确"));
     }
 
     let client_id = hex::encode(rand::random::<[u8; 16]>());
     let token = state.tokens.issue("admin", &client_id);
-    Ok(Json(json!({ "admin_token": token, "client_id": client_id })))
+    Ok(Json(
+        json!({ "admin_token": token, "client_id": client_id }),
+    ))
 }
 
 #[derive(Deserialize)]
@@ -206,8 +216,12 @@ pub struct SourceTextQuery {
     pub to: i64,
 }
 
-fn default_frm() -> i64 { 1 }
-fn default_to() -> i64 { 80 }
+fn default_frm() -> i64 {
+    1
+}
+fn default_to() -> i64 {
+    80
+}
 
 // GET /api/source/{doc_uid}/text
 pub async fn source_text(
@@ -296,16 +310,24 @@ pub async fn source_file(
         return Err(ApiError::not_found("原文件缺失"));
     }
 
-    let file_bytes = std::fs::read(&file_path)
-        .map_err(|_| ApiError::internal("读取原文件失败"))?;
+    let file_bytes = std::fs::read(&file_path).map_err(|_| ApiError::internal("读取原文件失败"))?;
 
     let filename = format!("{}.{}", doc.title, doc.doc_type);
-    let disposition = format!("attachment; filename*=UTF-8''{}", urlencoding::encode(&filename));
+    let disposition = format!(
+        "attachment; filename*=UTF-8''{}",
+        urlencoding::encode(&filename)
+    );
 
     let mut response = (StatusCode::OK, file_bytes).into_response();
     let resp_headers = response.headers_mut();
-    resp_headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/octet-stream"));
-    resp_headers.insert("X-Content-Type-Options", HeaderValue::from_static("nosniff"));
+    resp_headers.insert(
+        CONTENT_TYPE,
+        HeaderValue::from_static("application/octet-stream"),
+    );
+    resp_headers.insert(
+        "X-Content-Type-Options",
+        HeaderValue::from_static("nosniff"),
+    );
     if let Ok(val) = HeaderValue::from_str(&disposition) {
         resp_headers.insert(CONTENT_DISPOSITION, val);
     }
