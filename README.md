@@ -71,10 +71,10 @@ cd frontend && npm install && npm run build && cd ..
 
 ```bash
 npm ci
-npm test                      # 18 项组件/API 测试
+npm test                      # 26 项组件/API 测试
 npm run build                 # TypeScript + 生产构建
 npx playwright install chromium  # 仅本地测试机安装，服务器不安装浏览器
-npm run test:e2e               # 桌面/手机 Chromium 共 10 项，模拟 API
+npm run test:e2e               # 桌面/手机 Chromium 共 12 项，模拟 API
 ```
 
 离线测试使用合成资料和隔离临时库。真实端到端脚本也使用临时库，不修改正式访问码或资料，但仍会调用付费外部服务，需先准备指定的真实测试包。旧版兼容性 PASS 不代表审查修复后已通过；人工验收、真实反代复验及 1C1G 压测未完成前不得上线。

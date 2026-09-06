@@ -161,6 +161,15 @@ input::placeholder, textarea::placeholder { color: #a1a5ae; }
 .markdown-body strong { color: #383c45; }
 .markdown-body blockquote { background: #f7fafc; border-left-color: #86cce5; color: #717987; }
 .markdown-table th { background: #fcf4f7; }
+.evidence-section { margin: 18px 0; border: 1px solid var(--line); border-radius: 10px; background: #fcfcfd; }
+.evidence-section > summary { display: flex; align-items: center; gap: 9px; padding: 13px 14px; list-style: none; cursor: pointer; color: var(--muted); font-size: 12px; border-radius: 10px; }
+.evidence-section > summary > span { flex: 1; color: var(--text); font-weight: 500; }
+.evidence-section > summary > svg { flex-shrink: 0; }
+.evidence-section > summary:hover { background: #fff6f9; }
+.evidence-section[open] > summary .source-chevron { transform: rotate(180deg); }
+.evidence-content { padding: 0 16px 14px; }
+.evidence-content > :first-child { margin-top: 0; }
+.evidence-content > :last-child { margin-bottom: 0; }
 .work-steps { border-bottom: 1px dashed #eeeef2; padding-bottom: 13px; }
 .work-steps summary small { font-size: 10px; }
 .work-steps li { font-size: 11px; }

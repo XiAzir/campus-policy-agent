@@ -3,6 +3,13 @@ import remarkGfm from "remark-gfm";
 import { SKIP, visit } from "unist-util-visit";
 import type { Root, RootContent, PhrasingContent } from "mdast";
 import type { Citation } from "../types";
+import type { ReactNode } from "react";
+import { ChevronDown, FileText } from "lucide-react";
+import rehypeFoldEvidence from "./rehypeFoldEvidence";
+
+function EvidenceSummary({ children }: { children?: ReactNode }) {
+  return <summary><FileText size={16} /><span>{children}</span><ChevronDown size={16} className="source-chevron" /></summary>;
+}
 
 export default function MessageBody({ text, citations, onOpen }: {
   text: string; citations: Citation[]; onOpen: (citation: Citation) => void;
@@ -33,7 +40,8 @@ export default function MessageBody({ text, citations, onOpen }: {
   };
 
   return <div className="msg-body markdown-body">
-    <Markdown skipHtml remarkPlugins={[remarkGfm, remarkCitations]} components={{
+    <Markdown skipHtml remarkPlugins={[remarkGfm, remarkCitations]} rehypePlugins={[rehypeFoldEvidence]} components={{
+      summary: EvidenceSummary,
       a: ({ node, href, children }) => {
         const id = node?.properties["data-evidence-id"];
         const citation = citations.find(c => c.evidence_id === id);

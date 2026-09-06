@@ -8,7 +8,7 @@ const documents = [
 
 const answer = "## 结论\n请在 **6 月 22 日前** 完成报名。[[EV1]]\n\n### 适用条件\n- 面向全体在校学生\n- 以团队为单位提交申请\n\n| 事项 | 时间 | 提交部门 |\n| --- | --- | --- |\n| 团队报名 | 6 月 22 日 | 学院团委 |\n| 材料审核 | 6 月 25 日 | 校团委 |\n\n> 具体安排以发布部门的现行通知为准。\n\n```text\n报名 → 材料审核 → 出发前培训\n```";
 
-async function setup(page: Page) {
+async function setup(page: Page, responseText = answer) {
   await page.addInitScript(() => localStorage.setItem("cpa.token", "webui-test"));
   await page.route("**/api/**", async route => {
     const path = new URL(route.request().url()).pathname;
@@ -18,10 +18,10 @@ async function setup(page: Page) {
       const events = [
         { event: "started", request_id: "webui-request" },
         ...["analyzing", "embedding", "searching", "composing"].map(stage => ({ event: "stage", stage })),
-        { event: "delta", text: answer },
+        { event: "delta", text: responseText },
         { event: "stage", stage: "verifying" },
         { event: "citations", citations: [{ evidence_id: "EV1", ...documents[0], line_start: 2, line_end: 4, page: null, section: "报名安排", quote: ["请于6月22日前提交报名材料。"] }] },
-        { event: "done", text: answer, interrupted: false },
+        { event: "done", text: responseText, interrupted: false },
       ];
       return route.fulfill({ contentType: "text/event-stream", body: events.map(event => `data: ${JSON.stringify(event)}\n\n`).join("") });
     }
@@ -103,4 +103,38 @@ test("login artwork and validation fit the viewport", async ({ page }, info) => 
   await expect(page.getByLabel("班级访问码")).toBeVisible();
   await layoutCheck(page);
   await page.screenshot({ path: info.outputPath("login.png"), fullPage: true });
+});
+
+test("answer evidence folds independently of source cards and preserves citation access", async ({ page }, info) => {
+  await setup(page, "## 结论\n报名截止时间为6月22日。\n\n## 适用条件\n面向全体学生。\n\n---\n\n## 原文依据\n1. 各团队须在系统中完成报名。[[EV1]]\n2. 在截止时间前提交汇总表。\n\n---\n\n## 补充说明\n具体要求以现行通知为准。");
+  await page.goto("/");
+  await page.getByRole("textbox", { name: "问题" }).fill("三下乡什么时候报名？");
+  await page.getByRole("button", { name: "发送", exact: true }).click();
+  const fold = page.locator(".evidence-section");
+  const sources = page.locator(".source-card");
+  await expect(fold.locator("summary")).toBeVisible();
+  await expect(fold).not.toHaveAttribute("open");
+  await expect(fold.locator("ol")).not.toBeVisible();
+  await expect(page.getByText("面向全体学生。", { exact: true })).toBeVisible();
+  await expect(page.getByText("具体要求以现行通知为准。", { exact: true })).toBeVisible();
+  await layoutCheck(page);
+  await page.screenshot({ path: info.outputPath("evidence-collapsed.png"), fullPage: true });
+  await fold.locator("summary").focus();
+  await page.keyboard.press("Enter");
+  await expect(fold.locator("ol")).toBeVisible();
+  await expect(sources).not.toHaveAttribute("open");
+  await fold.getByRole("button", { name: "原文 1", exact: true }).click();
+  await expect(page.getByRole("dialog", { name: "原文追溯" })).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(fold).toHaveAttribute("open");
+  await layoutCheck(page);
+  await page.screenshot({ path: info.outputPath("evidence-expanded.png"), fullPage: true });
+  await fold.locator("summary").click();
+  await expect(fold.locator("ol")).not.toBeVisible();
+  await sources.locator("summary").click();
+  await expect(sources).toHaveAttribute("open");
+  await expect(fold).not.toHaveAttribute("open");
+  await page.reload();
+  await expect(fold).not.toHaveAttribute("open");
+  await expect(sources).not.toHaveAttribute("open");
 });
