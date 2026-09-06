@@ -647,4 +647,45 @@ mod tests {
         let counts = pool.get_counts().await.unwrap();
         assert_eq!(counts.documents, 0);
     }
+
+    #[tokio::test]
+    async fn test_read_legacy_database_fixture() {
+        let legacy_db_path = Path::new("tests/fixtures/legacy_data/campus.db");
+        if !legacy_db_path.exists() {
+            eprintln!("legacy_data/campus.db 不存在，跳过测试");
+            return;
+        }
+
+        let pool = DbPool::new(legacy_db_path, 2, 64).expect("打开 Python legacy campus.db 失败");
+
+        // 1. 验证 settings 可读
+        let admin_hash = pool.setting_get("admin_password_hash".into()).await.unwrap();
+        assert!(admin_hash.is_some(), "应读取到 Python 生成的 admin_password_hash");
+
+        // 2. 验证 catalog 现行目录读取
+        let catalog = pool.get_catalog().await.unwrap();
+        assert_eq!(catalog.len(), 6, "Python 生成的 6 份现行文档应全部读出");
+
+        // 检查其中一份文档字段
+        let first = catalog.iter().find(|d| d.title.contains("三下乡")).expect("应包含三下乡文档");
+        assert_eq!(first.doc_type, "txt");
+        assert_eq!(first.department, "团委");
+        assert_eq!(first.line_count, 4);
+
+        // 3. 验证单篇文档查询与版本链
+        let doc_public = pool.get_document_public(first.doc_uid.clone()).await.unwrap();
+        assert!(doc_public.is_some());
+
+        let versions = pool.get_version_history(first.doc_uid.clone()).await.unwrap();
+        assert_eq!(versions.len(), 1);
+        assert_eq!(versions[0].title, first.title);
+        assert!(versions[0].is_current);
+
+        // 4. 验证 counts 指标
+        let counts = pool.get_counts().await.unwrap();
+        assert_eq!(counts.documents, 6);
+        assert_eq!(counts.current, 6);
+        assert!(counts.chunks > 0);
+        assert!(counts.packages > 0);
+    }
 }

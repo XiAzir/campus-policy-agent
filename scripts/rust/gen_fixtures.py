@@ -887,6 +887,22 @@ def main():
         write_json(f"sse/{name}.json", payload)
 
     agent.vectors.close_all()
+
+    # 导出 Python 生成的 legacy 目录夹具（包含 campus.db 及已发布文档/分块/FTS），供 Rust M1-M5 跨语言测试直接复用
+    legacy_dir = FIXTURES / "legacy_data"
+    if legacy_dir.exists():
+        import shutil
+        shutil.rmtree(legacy_dir)
+    legacy_dir.mkdir(parents=True, exist_ok=True)
+    import shutil
+    src_data = Path(config.data_dir)
+    for sub in ("campus.db", "files", "text", "vectors", "packages"):
+        src_path = src_data / sub
+        if src_path.is_file():
+            shutil.copy2(src_path, legacy_dir / sub)
+        elif src_path.is_dir():
+            shutil.copytree(src_path, legacy_dir / sub)
+
     db.close()
     write_json("meta.json", {
         "generated_by": "scripts/rust/gen_fixtures.py",
