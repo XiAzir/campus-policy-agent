@@ -58,10 +58,11 @@ export type WorkStage = "analyzing" | "embedding" | "searching" | "reading" | "v
 
 export interface WorkStep {
   stage: WorkStage;
+  status?: "failed";
 }
 
 export type ChatEvent =
-  | { event: "stage"; stage: WorkStage }
+  | { event: "stage"; stage: WorkStage; status?: "failed" }
   | { event: "metrics"; retrieval_s: number; model_calls: number; embedding_calls: number }
   | { event: "queued"; position: number; request_id: string }
   | { event: "started"; request_id: string }

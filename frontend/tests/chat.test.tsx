@@ -73,6 +73,20 @@ test("reopen marks unfinished persisted answer interrupted", async () => {
   expect((await idb.getChat(chat.id))?.messages[0]).toMatchObject({ pending: false, interrupted: true });
 });
 
+test("stage failures persist without inventing another successful step", async () => {
+  vi.mocked(streamChat).mockImplementation(async (_, event) => {
+    await event({ event: "stage", stage: "embedding" });
+    await event({ event: "stage", stage: "embedding", status: "failed" });
+    await event({ event: "stage", stage: "composing" });
+    await event({ event: "done", text: "暂时无法检索", interrupted: false });
+  });
+  await start();
+  await screen.findByText("暂时无法检索");
+  expect((await idb.listChats())[0].messages.at(-1)?.steps).toEqual([
+    { stage: "embedding", status: "failed" }, { stage: "composing" },
+  ]);
+});
+
 test("pagehide aborts the live request", async () => {
   let signal: AbortSignal;
   vi.mocked(streamChat).mockImplementation(async (_, event, abort) => {

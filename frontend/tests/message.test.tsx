@@ -47,9 +47,15 @@ test("source cards start collapsed and expand to the real source action", async 
 
 test("work steps only show received stages and preserve interruption", () => {
   const { rerender, container } = render(<WorkSteps steps={[{ stage: "analyzing" }, { stage: "embedding" }]} pending />);
-  expect(screen.getByRole("status").textContent).toBe("生成查询向量中");
+  expect(screen.getByRole("status").textContent).toBe("正在生成查询向量");
   expect(screen.queryByText("检索关键词与向量索引")).toBeNull();
   rerender(<WorkSteps steps={[{ stage: "analyzing" }, { stage: "embedding" }]} interrupted />);
   expect(screen.getByText("处理已中断")).toBeTruthy();
   expect(container.querySelector("details")?.open).toBe(false);
+});
+
+test("failed embedding is not marked complete when the model continues", async () => {
+  render(<WorkSteps steps={[{ stage: "embedding", status: "failed" }, { stage: "composing" }]} />);
+  await userEvent.click(screen.getByText("处理结束，部分步骤未完成"));
+  expect(screen.getByText("生成查询向量（未完成）").className).toBe("error");
 });

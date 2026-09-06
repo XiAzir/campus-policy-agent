@@ -1,4 +1,4 @@
-import { Check, ChevronDown, Circle, LoaderCircle, OctagonPause } from "lucide-react";
+import { Check, ChevronDown, Circle, CircleX, LoaderCircle, OctagonPause } from "lucide-react";
 import type { WorkStage, WorkStep } from "../types";
 
 const labels: Record<WorkStage, string> = {
@@ -9,18 +9,22 @@ const labels: Record<WorkStage, string> = {
 export default function WorkSteps({ steps, pending, interrupted }: {
   steps: WorkStep[]; pending?: boolean; interrupted?: boolean;
 }) {
+  steps = steps.filter(step => step && step.stage in labels);
   if (!steps.length) return null;
-  const title = pending ? labels[steps.at(-1)!.stage] : interrupted ? "处理已中断" : "处理完成";
+  const hasFailure = steps.some(step => step.status === "failed");
+  const failedNow = pending && steps.at(-1)?.status === "failed";
+  const title = failedNow ? "当前步骤未完成" : pending ? `正在${labels[steps.at(-1)!.stage]}` : interrupted ? "处理已中断" : hasFailure ? "处理结束，部分步骤未完成" : "处理完成";
   return <details className="work-steps" open={pending || undefined}>
     <summary><span className={pending ? "step-running" : interrupted ? "interrupted" : "step-complete"}>
       {pending ? <LoaderCircle className="spin" size={15} /> : interrupted ? <OctagonPause size={15} /> : <Check size={15} />}
-      <span role={pending ? "status" : undefined}>{title}{pending ? "中" : ""}</span>
+      <span role={pending ? "status" : undefined}>{title}</span>
     </span><small>{steps.length} 个步骤</small><ChevronDown size={14} /></summary>
     <ol>{steps.map((step, index) => {
       const last = index === steps.length - 1;
-      return <li key={index} className={last && pending ? "step-running" : ""}>
-        {last && pending ? <LoaderCircle className="spin" size={13} /> : last && interrupted ? <Circle size={13} /> : <Check size={13} />}
-        {labels[step.stage]}
+      const failed = step.status === "failed";
+      return <li key={index} className={failed ? "error" : last && pending ? "step-running" : ""}>
+        {failed ? <CircleX size={13} /> : last && pending ? <LoaderCircle className="spin" size={13} /> : last && interrupted ? <Circle size={13} /> : <Check size={13} />}
+        {labels[step.stage]}{failed && "（未完成）"}
       </li>;
     })}</ol>
   </details>;

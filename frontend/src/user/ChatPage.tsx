@@ -152,7 +152,9 @@ export default function ChatPage() {
             profile: { college: selectedPrefs.college, entry_year: selectedPrefs.entryYear } }, async (ev: ChatEvent) => {
             switch (ev.event) {
               case "stage":
-                reply.steps!.push({ stage: ev.stage });
+                if (ev.status === "failed" && reply.steps?.at(-1)?.stage === ev.stage) {
+                  reply.steps.at(-1)!.status = "failed";
+                } else reply.steps!.push({ stage: ev.stage, status: ev.status });
                 setStatus("");
                 await persist();
                 break;

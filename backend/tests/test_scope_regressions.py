@@ -60,7 +60,8 @@ def test_search_stages_follow_real_embedding_and_failure(agent, monkeypatch):
     monkeypatch.setattr("app.agent.embed_query", fail_embed)
     with pytest.raises(LLMError):
         asyncio.run(agent.tool_policy_search({"query": "三下乡"}, TurnScope(), [], emit))
-    assert events == [{"event": "stage", "stage": "embedding"}]
+    assert events == [{"event": "stage", "stage": "embedding"},
+                      {"event": "stage", "stage": "embedding", "status": "failed"}]
 
 
 def test_no_tool_call_does_not_claim_retrieval(agent):

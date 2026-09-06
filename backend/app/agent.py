@@ -179,7 +179,12 @@ class Agent:
         started = time.monotonic()
         if emit:
             await emit({"event": "stage", "stage": "embedding"})
-        qvec = await embed_query(query)
+        try:
+            qvec = await embed_query(query)
+        except LLMError:
+            if emit:
+                await emit({"event": "stage", "stage": "embedding", "status": "failed"})
+            raise
         if emit:
             await emit({"event": "stage", "stage": "searching"})
         # Re-evaluate after the network await: an administrator may have disabled a file.
@@ -368,9 +373,13 @@ class Agent:
                     elif name == "read_source":
                         await emit({"event": "stage", "stage": "reading"})
                         result = await self.tool_read_source(args, state["scope"], state["evidence"])
+                        if "error" in result:
+                            await emit({"event": "stage", "stage": "reading", "status": "failed"})
                     elif name == "get_versions":
                         await emit({"event": "stage", "stage": "versions"})
                         result = await self.tool_get_versions(args, state["scope"], state["evidence"])
+                        if "error" in result:
+                            await emit({"event": "stage", "stage": "versions", "status": "failed"})
                     else:
                         result = {"error": f"未知工具 {name}"}
                 except LLMError as exc:
