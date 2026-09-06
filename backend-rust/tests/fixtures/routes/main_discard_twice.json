@@ -1,0 +1,10 @@
+{
+  "name": "discard_twice",
+  "method": "DELETE",
+  "path": "/api/admin/packages/2",
+  "status": 400,
+  "response_headers": {},
+  "response_body": {
+    "detail": "只有存在的草稿可以丢弃"
+  }
+}

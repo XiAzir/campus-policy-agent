@@ -1,0 +1,61 @@
+{
+  "secret_hex": "3f2a3f2a3f2a3f2a3f2a3f2a3f2a3f2a3f2a3f2a3f2a3f2a3f2a3f2a3f2a3f2a",
+  "note": "签名为对原始 base64url 段做 HMAC-SHA256 后取 hex 前 32 字符；payload 无 padding",
+  "cases": [
+    {
+      "payload": {
+        "r": "user",
+        "c": "0f3d9a2b7c6145e8a1b2c3d4e5f60718",
+        "e": 1893456000
+      },
+      "raw": "eyJyIjogInVzZXIiLCAiYyI6ICIwZjNkOWEyYjdjNjE0NWU4YTFiMmMzZDRlNWY2MDcxOCIsICJlIjogMTg5MzQ1NjAwMH0",
+      "sig": "6cc35a624143f9e2709a88c99d389a47",
+      "token": "eyJyIjogInVzZXIiLCAiYyI6ICIwZjNkOWEyYjdjNjE0NWU4YTFiMmMzZDRlNWY2MDcxOCIsICJlIjogMTg5MzQ1NjAwMH0.6cc35a624143f9e2709a88c99d389a47",
+      "role": "user",
+      "client_id": "0f3d9a2b7c6145e8a1b2c3d4e5f60718",
+      "expired": false
+    },
+    {
+      "payload": {
+        "r": "admin",
+        "c": "admin-client-0001",
+        "e": 1893456000
+      },
+      "raw": "eyJyIjogImFkbWluIiwgImMiOiAiYWRtaW4tY2xpZW50LTAwMDEiLCAiZSI6IDE4OTM0NTYwMDB9",
+      "sig": "48052f86194d9fbc573ca92ae67af3f3",
+      "token": "eyJyIjogImFkbWluIiwgImMiOiAiYWRtaW4tY2xpZW50LTAwMDEiLCAiZSI6IDE4OTM0NTYwMDB9.48052f86194d9fbc573ca92ae67af3f3",
+      "role": "admin",
+      "client_id": "admin-client-0001",
+      "expired": false
+    },
+    {
+      "payload": {
+        "r": "user",
+        "c": "expired",
+        "e": 1000000000
+      },
+      "raw": "eyJyIjogInVzZXIiLCAiYyI6ICJleHBpcmVkIiwgImUiOiAxMDAwMDAwMDAwfQ",
+      "sig": "7fd3cc1b099f47b8392054edf404b8c0",
+      "token": "eyJyIjogInVzZXIiLCAiYyI6ICJleHBpcmVkIiwgImUiOiAxMDAwMDAwMDAwfQ.7fd3cc1b099f47b8392054edf404b8c0",
+      "role": "user",
+      "client_id": "expired",
+      "expired": true
+    },
+    {
+      "payload": {
+        "r": "user",
+        "c": "0f3d9a2b7c6145e8a1b2c3d4e5f60718",
+        "e": 1893456000
+      },
+      "raw": "eyJjIjogIjBmM2Q5YTJiN2M2MTQ1ZThhMWIyYzNkNGU1ZjYwNzE4IiwgInIiOiAidXNlciIsICJlIjogMTg5MzQ1NjAwMH0",
+      "sig": "5f98aebfb808d82611ff99d643f7fca2",
+      "token": "eyJjIjogIjBmM2Q5YTJiN2M2MTQ1ZThhMWIyYzNkNGU1ZjYwNzE4IiwgInIiOiAidXNlciIsICJlIjogMTg5MzQ1NjAwMH0.5f98aebfb808d82611ff99d643f7fca2",
+      "role": "user",
+      "client_id": "0f3d9a2b7c6145e8a1b2c3d4e5f60718",
+      "expired": false,
+      "note": "键序与空格不同的等价 payload"
+    }
+  ],
+  "tampered_token": "eyJyIjogInVzZXIiLCAiYyI6ICIwZjNkOWEyYjdjNjE0NWU4YTFiMmMzZDRlNWY2MDcxOCIsICJlIjogMTg5MzQ1NjAwMH0.6cc35a624143f9e2709a88c99d389a40",
+  "tampered_valid": false
+}

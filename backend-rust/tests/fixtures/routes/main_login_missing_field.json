@@ -1,0 +1,21 @@
+{
+  "name": "login_missing_field",
+  "method": "POST",
+  "path": "/api/auth/login",
+  "status": 422,
+  "response_headers": {},
+  "response_body": {
+    "detail": [
+      {
+        "type": "missing",
+        "loc": [
+          "body",
+          "code"
+        ],
+        "msg": "Field required",
+        "input": {}
+      }
+    ]
+  },
+  "request": {}
+}

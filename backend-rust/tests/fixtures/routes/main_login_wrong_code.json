@@ -1,0 +1,13 @@
+{
+  "name": "login_wrong_code",
+  "method": "POST",
+  "path": "/api/auth/login",
+  "status": 401,
+  "response_headers": {},
+  "response_body": {
+    "detail": "访问码不正确"
+  },
+  "request": {
+    "code": "wrong-code"
+  }
+}

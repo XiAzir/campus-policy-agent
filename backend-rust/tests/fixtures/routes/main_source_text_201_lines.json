@@ -1,0 +1,25 @@
+{
+  "name": "source_text_201_lines",
+  "method": "GET",
+  "path": "/api/source/fe4aab38737d4c94937e8b6b5135a708/text?frm=1&to=250",
+  "status": 200,
+  "response_headers": {},
+  "response_body": {
+    "doc_uid": "fe4aab38737d4c94937e8b6b5135a708",
+    "title": "校纪处分条例（长文样本）",
+    "doc_type": "txt",
+    "line_start": 1,
+    "line_end": 201,
+    "line_count": 250,
+    "page": null,
+    "section": "校纪处分条例（长文样本）",
+    "deactivated_kind": "",
+    "lines": [
+      "L1: 校纪处分条例（长文样本）",
+      "L2: 第1条 本办法第1章第1节适用于全校学生，自发布之日起施行。",
+      "L3: 第2条 本办法第2章第2节适用于全校学生，自发布之日起施行。",
+      "…(共 201 行)"
+    ]
+  },
+  "note": "to 最多 frm+200：请求 to=250 实际返回 201 行（闭区间含端点）"
+}

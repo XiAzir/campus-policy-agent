@@ -1,0 +1,13 @@
+{
+  "name": "upload_duplicate",
+  "method": "POST",
+  "path": "/api/admin/packages",
+  "status": 400,
+  "response_headers": {},
+  "response_body": {
+    "detail": "该资料包已导入过（包哈希一致），拒绝重复导入"
+  },
+  "request": {
+    "file": "(与已导入包字节一致)"
+  }
+}

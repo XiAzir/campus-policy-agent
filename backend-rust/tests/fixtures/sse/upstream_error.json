@@ -1,0 +1,36 @@
+{
+  "question": "触发上游错误",
+  "events": [
+    {
+      "event": "started",
+      "request_id": "c86fcdc5573b48e3a79210ae2ce4458f"
+    },
+    {
+      "event": "generating"
+    },
+    {
+      "event": "stage",
+      "stage": "analyzing"
+    },
+    {
+      "event": "error",
+      "message": "模型调用失败 HTTP 500"
+    },
+    {
+      "event": "metrics",
+      "model_calls": 0,
+      "embedding_calls": 0,
+      "prompt_tokens": 0,
+      "output_tokens": 0,
+      "thought_tokens": 0,
+      "embedding_tokens": 0,
+      "model_usage_reported": false,
+      "embedding_usage_reported": false,
+      "retrieval_s": 0.0
+    },
+    {
+      "event": "error",
+      "message": "服务内部错误：LLMError"
+    }
+  ]
+}

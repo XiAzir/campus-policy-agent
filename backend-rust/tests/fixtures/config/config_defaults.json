@@ -1,0 +1,18 @@
+{
+  "token_ttl_days": 30,
+  "chat_concurrency": 1,
+  "chat_queue_max": 10,
+  "chat_history_max_rounds": 12,
+  "chat_history_max_chars": 8000,
+  "chat_request_timeout_s": 180,
+  "chat_max_tool_rounds": 3,
+  "max_package_mb": 200,
+  "disk_warn_gb": 8.0,
+  "max_upload_body_mb": 210,
+  "embed_dims": 1024,
+  "preprocessing_version": "v1",
+  "host": "127.0.0.1",
+  "port": 8000,
+  "initial_admin_password": "admin",
+  "note": "环境变量可覆盖（GEMINI_BASE_URL/GEMINI_API_KEY/GEMINI_MODEL/SILICONFLOW_* 为必填）"
+}

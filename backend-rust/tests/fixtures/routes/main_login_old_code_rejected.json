@@ -1,0 +1,13 @@
+{
+  "name": "login_old_code_rejected",
+  "method": "POST",
+  "path": "/api/auth/login",
+  "status": 401,
+  "response_headers": {},
+  "response_body": {
+    "detail": "访问码不正确"
+  },
+  "request": {
+    "code": "2026fall"
+  }
+}

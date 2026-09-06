@@ -1,0 +1,10 @@
+{
+  "name": "enable_missing",
+  "method": "POST",
+  "path": "/api/admin/documents/no-such-uid/enable",
+  "status": 400,
+  "response_headers": {},
+  "response_body": {
+    "detail": "资料不存在"
+  }
+}

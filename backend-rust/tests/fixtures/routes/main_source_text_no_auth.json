@@ -1,0 +1,10 @@
+{
+  "name": "source_text_no_auth",
+  "method": "GET",
+  "path": "/api/source/66fbae7cc0b742d1b96201c108798f4c/text",
+  "status": 401,
+  "response_headers": {},
+  "response_body": {
+    "detail": "未登录"
+  }
+}

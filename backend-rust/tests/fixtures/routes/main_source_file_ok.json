@@ -1,0 +1,12 @@
+{
+  "name": "source_file_ok",
+  "method": "GET",
+  "path": "/api/source/66fbae7cc0b742d1b96201c108798f4c/file",
+  "status": 200,
+  "response_headers": {
+    "content-type": "application/octet-stream",
+    "x-content-type-options": "nosniff",
+    "content-disposition": "attachment; filename=\"document-0.txt\""
+  },
+  "response_body": "<原文件字节，doc_hash 命名>"
+}

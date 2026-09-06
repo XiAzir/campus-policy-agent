@@ -1,0 +1,10 @@
+{
+  "name": "source_text_missing",
+  "method": "GET",
+  "path": "/api/source/no-such-uid/text",
+  "status": 404,
+  "response_headers": {},
+  "response_body": {
+    "detail": "资料不存在"
+  }
+}

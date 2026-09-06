@@ -1,0 +1,16 @@
+{
+  "name": "chat_files_empty",
+  "method": "POST",
+  "path": "/api/chat",
+  "status": 400,
+  "response_headers": {},
+  "response_body": {
+    "detail": "请至少选择一份文件"
+  },
+  "request": {
+    "scope": {
+      "mode": "files",
+      "doc_uids": []
+    }
+  }
+}

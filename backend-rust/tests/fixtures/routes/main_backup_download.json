@@ -1,0 +1,11 @@
+{
+  "name": "backup_download",
+  "method": "GET",
+  "path": "/api/admin/backup",
+  "status": 200,
+  "response_headers": {
+    "content-type": "application/zip",
+    "content-disposition": "attachment; filename=\"backup-2026-09-06T120000Z.zip\""
+  },
+  "response_body": "<zip 字节，PK 开头>"
+}

@@ -1,0 +1,23 @@
+{
+  "name": "admin_status",
+  "method": "GET",
+  "path": "/api/admin/status",
+  "status": 200,
+  "response_headers": {},
+  "response_body": {
+    "disk": {
+      "total_gb": 499.06,
+      "used_gb": 326.53,
+      "free_gb": 172.53,
+      "warn_gb": 8.0
+    },
+    "counts": {
+      "documents": 6,
+      "current": 6,
+      "chunks": 6,
+      "packages": 1
+    },
+    "data_dir_mb": 0.6,
+    "warnings": []
+  }
+}

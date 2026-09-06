@@ -1,0 +1,13 @@
+{
+  "name": "login_no_access_code",
+  "method": "POST",
+  "path": "/api/auth/login",
+  "status": 400,
+  "response_headers": {},
+  "response_body": {
+    "detail": "访问码尚未设置，请联系管理员在管理端设置"
+  },
+  "request": {
+    "code": "whatever"
+  }
+}

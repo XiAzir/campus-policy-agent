@@ -1,0 +1,14 @@
+{
+  "name": "login_ok",
+  "method": "POST",
+  "path": "/api/auth/login",
+  "status": 200,
+  "response_headers": {},
+  "response_body": {
+    "token": "<jwt>",
+    "client_id": "3b1c21a886b94d399b66a265408d8818"
+  },
+  "request": {
+    "code": "2026fall"
+  }
+}

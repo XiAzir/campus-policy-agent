@@ -1,0 +1,230 @@
+{
+  "name": "package_preview",
+  "method": "GET",
+  "path": "/api/admin/packages/1",
+  "status": 200,
+  "response_headers": {},
+  "response_body": {
+    "id": 1,
+    "sha256": "fbea3124030cd0db15a92778177976794c23353ee04228fbf26e16e54e52c50a",
+    "original_filename": "pkg.zip",
+    "size": 12702,
+    "imported_at": "2026-09-06T12:00:00Z",
+    "status": "draft",
+    "preprocessing_version": "v1",
+    "embed_model": "test-embed",
+    "embed_dim": 1024,
+    "doc_count": 6,
+    "chunk_count": 6,
+    "vector_shape": [
+      6,
+      1024
+    ],
+    "documents": [
+      {
+        "doc_hash": "e528c38258b5d30b5651197e37172feecc2397ee41cdaf0541038520555e95e3",
+        "original_filename": "document-0.txt",
+        "doc_type": "txt",
+        "title": "三下乡报名通知",
+        "department": "团委",
+        "effective_date": "2026-06-01",
+        "audience": [
+          "全校"
+        ],
+        "audience_scope": {},
+        "notes": "",
+        "replaces_doc_uid": null,
+        "replaces_unresolved": false,
+        "domains": [
+          {
+            "tag": "学生事务",
+            "section_ids": [
+              "s1"
+            ]
+          }
+        ],
+        "sections": [
+          {
+            "section_id": "s1",
+            "title": "三下乡报名通知",
+            "start_line": 1,
+            "end_line": 4
+          }
+        ],
+        "line_count": 4,
+        "chunk_count": 1,
+        "edited": false
+      },
+      {
+        "doc_hash": "d1a402d2cbe8b46c1e408b7567aa25651ddebfe7dc186dbe204f6c9b148cc2ad",
+        "original_filename": "document-1.txt",
+        "doc_type": "txt",
+        "title": "社会实践安全须知",
+        "department": "保卫处",
+        "effective_date": "2026-06-01",
+        "audience": [
+          "全校"
+        ],
+        "audience_scope": {},
+        "notes": "",
+        "replaces_doc_uid": null,
+        "replaces_unresolved": false,
+        "domains": [
+          {
+            "tag": "安全纪律",
+            "section_ids": [
+              "s1"
+            ]
+          }
+        ],
+        "sections": [
+          {
+            "section_id": "s1",
+            "title": "社会实践安全须知",
+            "start_line": 1,
+            "end_line": 4
+          }
+        ],
+        "line_count": 4,
+        "chunk_count": 1,
+        "edited": false
+      },
+      {
+        "doc_hash": "48d7e3cb1b075e025f57c118b017df284aa4a96130a31266453aa07594e99dc8",
+        "original_filename": "document-2.md",
+        "doc_type": "md",
+        "title": "奖学金评定办法",
+        "department": "学生工作处",
+        "effective_date": "2026-06-01",
+        "audience": [
+          "全校"
+        ],
+        "audience_scope": {},
+        "notes": "",
+        "replaces_doc_uid": null,
+        "replaces_unresolved": false,
+        "domains": [
+          {
+            "tag": "学生事务",
+            "section_ids": [
+              "s1"
+            ]
+          }
+        ],
+        "sections": [
+          {
+            "section_id": "s1",
+            "title": "奖学金评定办法",
+            "start_line": 1,
+            "end_line": 4
+          }
+        ],
+        "line_count": 4,
+        "chunk_count": 1,
+        "edited": false
+      },
+      {
+        "doc_hash": "b5beceb69ee1b3c2189faecda3a5a176d6fb6bf309fcfdd428139e7834ebb0eb",
+        "original_filename": "document-3.pdf",
+        "doc_type": "pdf",
+        "title": "社会实践基地管理办法（试行）",
+        "department": "教务处",
+        "effective_date": "2026-06-01",
+        "audience": [
+          "全校"
+        ],
+        "audience_scope": {},
+        "notes": "",
+        "replaces_doc_uid": null,
+        "replaces_unresolved": false,
+        "domains": [
+          {
+            "tag": "安全纪律",
+            "section_ids": [
+              "s1"
+            ]
+          }
+        ],
+        "sections": [
+          {
+            "section_id": "s1",
+            "title": "社会实践基地管理办法（试行）",
+            "start_line": 1,
+            "end_line": 4
+          }
+        ],
+        "line_count": 4,
+        "chunk_count": 1,
+        "edited": false
+      },
+      {
+        "doc_hash": "659952b4398470c89f65be6916a6ff8332fee11691891c03560af26262d21706",
+        "original_filename": "document-4.docx",
+        "doc_type": "docx",
+        "title": "宿舍管理规定（修订版）",
+        "department": "学生工作处",
+        "effective_date": "2026-06-01",
+        "audience": [
+          "全校"
+        ],
+        "audience_scope": {},
+        "notes": "",
+        "replaces_doc_uid": null,
+        "replaces_unresolved": false,
+        "domains": [
+          {
+            "tag": "学生事务",
+            "section_ids": [
+              "s1"
+            ]
+          }
+        ],
+        "sections": [
+          {
+            "section_id": "s1",
+            "title": "宿舍管理规定（修订版）",
+            "start_line": 1,
+            "end_line": 4
+          }
+        ],
+        "line_count": 4,
+        "chunk_count": 1,
+        "edited": false
+      },
+      {
+        "doc_hash": "32fc6c0296594e3b0124094839572ec33568057b491d9450323668a0d0f97f78",
+        "original_filename": "document-5.txt",
+        "doc_type": "txt",
+        "title": "校纪处分条例（长文样本）",
+        "department": "学生工作处",
+        "effective_date": "2026-06-01",
+        "audience": [
+          "全校"
+        ],
+        "audience_scope": {},
+        "notes": "",
+        "replaces_doc_uid": null,
+        "replaces_unresolved": false,
+        "domains": [
+          {
+            "tag": "安全纪律",
+            "section_ids": [
+              "s1"
+            ]
+          }
+        ],
+        "sections": [
+          {
+            "section_id": "s1",
+            "title": "校纪处分条例（长文样本）",
+            "start_line": 1,
+            "end_line": 250
+          }
+        ],
+        "line_count": 250,
+        "chunk_count": 1,
+        "edited": false
+      }
+    ]
+  }
+}

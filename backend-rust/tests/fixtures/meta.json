@@ -1,0 +1,10 @@
+{
+  "generated_by": "scripts/rust/gen_fixtures.py",
+  "python": "3.12.13",
+  "jieba_version": "0.42.1",
+  "numpy_version": "2.5.2",
+  "sqlite_version": "3.53.1",
+  "fastapi": "0.141.1",
+  "fixed_utcnow": "2026-09-06T12:00:00Z",
+  "note": "快照类夹具在生成时刻取值；重跑会得到不同随机 id，以 git 提交版本为准"
+}

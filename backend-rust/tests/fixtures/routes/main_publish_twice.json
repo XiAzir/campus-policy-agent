@@ -1,0 +1,10 @@
+{
+  "name": "publish_twice",
+  "method": "POST",
+  "path": "/api/admin/packages/1/publish",
+  "status": 400,
+  "response_headers": {},
+  "response_body": {
+    "detail": "资料包不是草稿状态"
+  }
+}

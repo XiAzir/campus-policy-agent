@@ -1,0 +1,61 @@
+{
+  "question": "读一下资料",
+  "events": [
+    {
+      "event": "started",
+      "request_id": "f64187bc2a3a458f9e3a091d9868dd79"
+    },
+    {
+      "event": "generating"
+    },
+    {
+      "event": "stage",
+      "stage": "analyzing"
+    },
+    {
+      "event": "stage",
+      "stage": "reading"
+    },
+    {
+      "event": "stage",
+      "stage": "reading",
+      "status": "failed"
+    },
+    {
+      "event": "generating"
+    },
+    {
+      "event": "stage",
+      "stage": "composing"
+    },
+    {
+      "event": "delta",
+      "text": "未能读取该资料原文，无法基于资料回答。"
+    },
+    {
+      "event": "stage",
+      "stage": "verifying"
+    },
+    {
+      "event": "metrics",
+      "model_calls": 0,
+      "embedding_calls": 0,
+      "prompt_tokens": 0,
+      "output_tokens": 0,
+      "thought_tokens": 0,
+      "embedding_tokens": 0,
+      "model_usage_reported": false,
+      "embedding_usage_reported": false,
+      "retrieval_s": 0.0
+    },
+    {
+      "event": "citations",
+      "citations": []
+    },
+    {
+      "event": "done",
+      "text": "未能读取该资料原文，无法基于资料回答。",
+      "interrupted": false
+    }
+  ]
+}

@@ -1,0 +1,96 @@
+{
+  "first_client_events": [
+    {
+      "event": "started",
+      "request_id": "2193f4db16674c86b4cc9f19464def11"
+    },
+    {
+      "event": "generating"
+    },
+    {
+      "event": "stage",
+      "stage": "analyzing"
+    },
+    {
+      "event": "delta",
+      "text": "慢"
+    },
+    {
+      "event": "stage",
+      "stage": "verifying"
+    },
+    {
+      "event": "metrics",
+      "model_calls": 0,
+      "embedding_calls": 0,
+      "prompt_tokens": 0,
+      "output_tokens": 0,
+      "thought_tokens": 0,
+      "embedding_tokens": 0,
+      "model_usage_reported": false,
+      "embedding_usage_reported": false,
+      "retrieval_s": 0.0
+    },
+    {
+      "event": "citations",
+      "citations": []
+    },
+    {
+      "event": "done",
+      "text": "慢",
+      "interrupted": false
+    }
+  ],
+  "second_client_events": [
+    {
+      "event": "queued",
+      "position": 1,
+      "request_id": "a8a6fe7f59954d1b9e94f2427edca979"
+    },
+    {
+      "event": "started",
+      "request_id": "a8a6fe7f59954d1b9e94f2427edca979"
+    },
+    {
+      "event": "started",
+      "request_id": "a8a6fe7f59954d1b9e94f2427edca979"
+    },
+    {
+      "event": "generating"
+    },
+    {
+      "event": "stage",
+      "stage": "analyzing"
+    },
+    {
+      "event": "delta",
+      "text": "慢"
+    },
+    {
+      "event": "stage",
+      "stage": "verifying"
+    },
+    {
+      "event": "metrics",
+      "model_calls": 0,
+      "embedding_calls": 0,
+      "prompt_tokens": 0,
+      "output_tokens": 0,
+      "thought_tokens": 0,
+      "embedding_tokens": 0,
+      "model_usage_reported": false,
+      "embedding_usage_reported": false,
+      "retrieval_s": 0.0
+    },
+    {
+      "event": "citations",
+      "citations": []
+    },
+    {
+      "event": "done",
+      "text": "慢",
+      "interrupted": false
+    }
+  ],
+  "note": "两个不同 client_id 的用户并发提问；第二个应先 queued(position=1) 后 started"
+}

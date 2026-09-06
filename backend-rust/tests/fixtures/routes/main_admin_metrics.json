@@ -1,0 +1,16 @@
+{
+  "name": "admin_metrics",
+  "method": "GET",
+  "path": "/api/admin/metrics",
+  "status": 200,
+  "response_headers": {},
+  "response_body": {
+    "at": "2026-09-06T12:00:00Z",
+    "rss_bytes": 161308672,
+    "cpu_s": 2.75,
+    "disk_free_bytes": 172531191808,
+    "running": 0,
+    "waiting": 0
+  },
+  "note": "rss_bytes/cpu_s/disk_free_bytes 为动态值；字段名与类型是契约"
+}

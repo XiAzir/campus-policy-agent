@@ -1,0 +1,10 @@
+{
+  "name": "discard_draft",
+  "method": "DELETE",
+  "path": "/api/admin/packages/2",
+  "status": 200,
+  "response_headers": {},
+  "response_body": {
+    "ok": true
+  }
+}

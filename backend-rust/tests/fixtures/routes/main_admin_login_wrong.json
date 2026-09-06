@@ -1,0 +1,13 @@
+{
+  "name": "admin_login_wrong",
+  "method": "POST",
+  "path": "/api/auth/admin/login",
+  "status": 401,
+  "response_headers": {},
+  "response_body": {
+    "detail": "管理员密码不正确"
+  },
+  "request": {
+    "password": "wrong"
+  }
+}

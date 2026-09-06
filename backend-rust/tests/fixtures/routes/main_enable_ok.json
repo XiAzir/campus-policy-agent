@@ -1,0 +1,10 @@
+{
+  "name": "enable_ok",
+  "method": "POST",
+  "path": "/api/admin/documents/66fbae7cc0b742d1b96201c108798f4c/enable",
+  "status": 200,
+  "response_headers": {},
+  "response_body": {
+    "ok": true
+  }
+}

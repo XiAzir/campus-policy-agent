@@ -1,0 +1,20 @@
+{
+  "name": "upload_missing_file",
+  "method": "POST",
+  "path": "/api/admin/packages",
+  "status": 422,
+  "response_headers": {},
+  "response_body": {
+    "detail": [
+      {
+        "type": "missing",
+        "loc": [
+          "body",
+          "file"
+        ],
+        "msg": "Field required",
+        "input": null
+      }
+    ]
+  }
+}

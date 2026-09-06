@@ -1,0 +1,13 @@
+{
+  "name": "admin_login_ok",
+  "method": "POST",
+  "path": "/api/auth/admin/login",
+  "status": 200,
+  "response_headers": {},
+  "response_body": {
+    "admin_token": "<jwt 形如 base64url.sig>"
+  },
+  "request": {
+    "password": "(已隐去)"
+  }
+}

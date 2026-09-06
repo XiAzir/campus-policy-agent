@@ -1,0 +1,13 @@
+{
+  "name": "upload_ok",
+  "method": "POST",
+  "path": "/api/admin/packages",
+  "status": 200,
+  "response_headers": {},
+  "response_body": {
+    "id": 1
+  },
+  "request": {
+    "file": "(small_v1.zip)"
+  }
+}

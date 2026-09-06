@@ -1,0 +1,10 @@
+{
+  "name": "auth_state_initial",
+  "method": "GET",
+  "path": "/api/auth/state",
+  "status": 200,
+  "response_headers": {},
+  "response_body": {
+    "access_code_set": false
+  }
+}

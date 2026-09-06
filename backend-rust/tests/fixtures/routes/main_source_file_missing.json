@@ -1,0 +1,10 @@
+{
+  "name": "source_file_missing",
+  "method": "GET",
+  "path": "/api/source/no-such-uid/file",
+  "status": 404,
+  "response_headers": {},
+  "response_body": {
+    "detail": "资料不存在"
+  }
+}

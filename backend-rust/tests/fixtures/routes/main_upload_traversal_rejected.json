@@ -1,0 +1,13 @@
+{
+  "name": "upload_traversal_rejected",
+  "method": "POST",
+  "path": "/api/admin/packages",
+  "status": 400,
+  "response_headers": {},
+  "response_body": {
+    "detail": "校验未通过：包含不允许的条目：.."
+  },
+  "request": {
+    "file": "(含 ../ 路径的 zip)"
+  }
+}

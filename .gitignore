@@ -16,6 +16,9 @@ frontend/dist/
 skill/work/
 *.log
 
+# Rust 构建产物（Cargo.lock 保留提交）
+backend-rust/target/
+
 # 预处理工作目录与成品包、真实测试文档不入库
 work/
 *.zip

@@ -1,0 +1,26 @@
+{
+  "name": "chat_question_empty",
+  "method": "POST",
+  "path": "/api/chat",
+  "status": 422,
+  "response_headers": {},
+  "response_body": {
+    "detail": [
+      {
+        "type": "string_too_short",
+        "loc": [
+          "body",
+          "question"
+        ],
+        "msg": "String should have at least 1 character",
+        "input": "",
+        "ctx": {
+          "min_length": 1
+        }
+      }
+    ]
+  },
+  "request": {
+    "question": ""
+  }
+}

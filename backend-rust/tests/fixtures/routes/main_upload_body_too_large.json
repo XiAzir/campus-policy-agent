@@ -1,0 +1,14 @@
+{
+  "name": "upload_body_too_large",
+  "method": "POST",
+  "path": "/api/admin/packages",
+  "status": 413,
+  "response_headers": {},
+  "response_body": {
+    "detail": "请求体超过上限"
+  },
+  "request": {
+    "file": "(zip，超上限)"
+  },
+  "note": "生成时临时将 max_upload_body_mb 置 0；真实默认 210MB"
+}

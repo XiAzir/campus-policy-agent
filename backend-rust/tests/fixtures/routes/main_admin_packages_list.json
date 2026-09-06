@@ -1,0 +1,23 @@
+{
+  "name": "admin_packages_list",
+  "method": "GET",
+  "path": "/api/admin/packages",
+  "status": 200,
+  "response_headers": {},
+  "response_body": {
+    "packages": [
+      {
+        "id": 1,
+        "sha256": "fbea3124030cd0db15a92778177976794c23353ee04228fbf26e16e54e52c50a",
+        "original_filename": "pkg.zip",
+        "size": 12702,
+        "imported_at": "2026-09-06T12:00:00Z",
+        "status": "draft",
+        "doc_count": 6,
+        "chunk_count": 6,
+        "embed_model": "test-embed",
+        "embed_dim": 1024
+      }
+    ]
+  }
+}

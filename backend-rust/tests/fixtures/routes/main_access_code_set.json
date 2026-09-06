@@ -1,0 +1,13 @@
+{
+  "name": "access_code_set",
+  "method": "PUT",
+  "path": "/api/admin/access-code",
+  "status": 200,
+  "response_headers": {},
+  "response_body": {
+    "ok": true
+  },
+  "request": {
+    "code": "2026fall"
+  }
+}

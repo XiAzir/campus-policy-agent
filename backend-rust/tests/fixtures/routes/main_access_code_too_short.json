@@ -1,0 +1,26 @@
+{
+  "name": "access_code_too_short",
+  "method": "PUT",
+  "path": "/api/admin/access-code",
+  "status": 422,
+  "response_headers": {},
+  "response_body": {
+    "detail": [
+      {
+        "type": "string_too_short",
+        "loc": [
+          "body",
+          "code"
+        ],
+        "msg": "String should have at least 4 characters",
+        "input": "12",
+        "ctx": {
+          "min_length": 4
+        }
+      }
+    ]
+  },
+  "request": {
+    "code": "12"
+  }
+}

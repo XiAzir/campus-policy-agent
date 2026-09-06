@@ -1,0 +1,13 @@
+{
+  "name": "restore_broken",
+  "method": "POST",
+  "path": "/api/admin/restore",
+  "status": 400,
+  "response_headers": {},
+  "response_body": {
+    "detail": "备份内容损坏或读取失败"
+  },
+  "request": {
+    "file": "(非法 zip)"
+  }
+}

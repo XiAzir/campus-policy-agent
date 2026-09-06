@@ -1,0 +1,17 @@
+{
+  "name": "restore_ok",
+  "method": "POST",
+  "path": "/api/admin/restore",
+  "status": 200,
+  "response_headers": {},
+  "response_body": {
+    "ok": true,
+    "summary": {
+      "documents": 6,
+      "chunks": 6
+    }
+  },
+  "request": {
+    "file": "(backup.zip)"
+  }
+}

@@ -1,0 +1,10 @@
+{
+  "name": "access_code_rotate",
+  "method": "PUT",
+  "path": "/api/admin/access-code",
+  "status": 200,
+  "response_headers": {},
+  "response_body": {
+    "ok": true
+  }
+}

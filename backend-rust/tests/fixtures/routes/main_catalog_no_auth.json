@@ -1,0 +1,10 @@
+{
+  "name": "catalog_no_auth",
+  "method": "GET",
+  "path": "/api/catalog",
+  "status": 401,
+  "response_headers": {},
+  "response_body": {
+    "detail": "未登录"
+  }
+}

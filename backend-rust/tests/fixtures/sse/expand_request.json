@@ -1,0 +1,46 @@
+{
+  "question": "其他学院的规定是什么？",
+  "scope": {
+    "mode": "domains",
+    "domains": [
+      "安全纪律"
+    ]
+  },
+  "events": [
+    {
+      "event": "started",
+      "request_id": "dee3e4f9e2e249d9a1422247c5b4cf81"
+    },
+    {
+      "event": "generating"
+    },
+    {
+      "event": "stage",
+      "stage": "analyzing"
+    },
+    {
+      "event": "delta",
+      "text": "范围不足，[[EXPAND_REQUEST:需要检索其他学院的相关规定]]"
+    },
+    {
+      "event": "stage",
+      "stage": "verifying"
+    },
+    {
+      "event": "expand_request",
+      "reason": "需要检索其他学院的相关规定"
+    },
+    {
+      "event": "metrics",
+      "model_calls": 0,
+      "embedding_calls": 0,
+      "prompt_tokens": 0,
+      "output_tokens": 0,
+      "thought_tokens": 0,
+      "embedding_tokens": 0,
+      "model_usage_reported": false,
+      "embedding_usage_reported": false,
+      "retrieval_s": 0.0
+    }
+  ]
+}

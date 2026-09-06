@@ -1,0 +1,13 @@
+{
+  "name": "chat_cancel_unknown",
+  "method": "POST",
+  "path": "/api/chat/cancel",
+  "status": 200,
+  "response_headers": {},
+  "response_body": {
+    "ok": false
+  },
+  "request": {
+    "request_id": "unknown"
+  }
+}

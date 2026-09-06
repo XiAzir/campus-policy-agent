@@ -1,0 +1,13 @@
+{
+  "name": "publish_ok",
+  "method": "POST",
+  "path": "/api/admin/packages/1/publish",
+  "status": 200,
+  "response_headers": {},
+  "response_body": {
+    "ok": true
+  },
+  "request": {
+    "replacements": {}
+  }
+}

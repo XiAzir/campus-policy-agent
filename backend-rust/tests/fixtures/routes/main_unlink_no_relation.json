@@ -1,0 +1,10 @@
+{
+  "name": "unlink_no_relation",
+  "method": "POST",
+  "path": "/api/admin/documents/66fbae7cc0b742d1b96201c108798f4c/unlink",
+  "status": 400,
+  "response_headers": {},
+  "response_body": {
+    "detail": "该资料没有替代关系"
+  }
+}

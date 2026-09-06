@@ -1,0 +1,10 @@
+{
+  "name": "chat_cancel_no_auth",
+  "method": "POST",
+  "path": "/api/chat/cancel",
+  "status": 401,
+  "response_headers": {},
+  "response_body": {
+    "detail": "未登录"
+  }
+}

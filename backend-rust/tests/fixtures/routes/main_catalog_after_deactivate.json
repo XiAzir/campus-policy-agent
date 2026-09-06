@@ -1,0 +1,10 @@
+{
+  "name": "catalog_after_deactivate",
+  "method": "GET",
+  "path": "/api/catalog",
+  "status": 200,
+  "response_headers": {},
+  "response_body": {
+    "documents": "<少一份，已停用资料不再出现>"
+  }
+}

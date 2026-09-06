@@ -1,0 +1,11 @@
+{
+  "name": "admin_versions_wrong_role",
+  "method": "GET",
+  "path": "/api/admin/documents/66fbae7cc0b742d1b96201c108798f4c/versions",
+  "status": 401,
+  "response_headers": {},
+  "response_body": {
+    "detail": "管理员登录已失效"
+  },
+  "note": "用户令牌访问管理端 → 401"
+}

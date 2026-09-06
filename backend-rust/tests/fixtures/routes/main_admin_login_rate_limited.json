@@ -1,0 +1,15 @@
+{
+  "name": "admin_login_rate_limited",
+  "method": "POST",
+  "path": "/api/auth/admin/login",
+  "status": 429,
+  "response_headers": {},
+  "response_body": {
+    "detail": "请求过于频繁，请稍后再试"
+  },
+  "request": {
+    "password": "nope",
+    "attempts": 11
+  },
+  "note": "11 连发状态序列 [401, 401, 401, 401, 401, 401, 401, 401, 401, 401, 429]；2/min、burst 10"
+}

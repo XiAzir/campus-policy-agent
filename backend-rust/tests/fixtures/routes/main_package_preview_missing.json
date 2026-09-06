@@ -1,0 +1,10 @@
+{
+  "name": "package_preview_missing",
+  "method": "GET",
+  "path": "/api/admin/packages/9999",
+  "status": 404,
+  "response_headers": {},
+  "response_body": {
+    "detail": "资料包不存在"
+  }
+}

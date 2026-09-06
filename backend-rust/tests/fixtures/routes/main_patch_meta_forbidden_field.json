@@ -1,0 +1,15 @@
+{
+  "name": "patch_meta_forbidden_field",
+  "method": "PATCH",
+  "path": "/api/admin/packages/1/documents/e528c38258b5d30b5651197e37172feecc2397ee41cdaf0541038520555e95e3",
+  "status": 400,
+  "response_headers": {},
+  "response_body": {
+    "detail": "字段 ['chunks'] 会影响分块或向量，修改后必须重新生成资料包（本地预处理）"
+  },
+  "request": {
+    "fields": {
+      "chunks": []
+    }
+  }
+}

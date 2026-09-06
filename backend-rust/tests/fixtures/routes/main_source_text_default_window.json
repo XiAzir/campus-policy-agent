@@ -1,0 +1,25 @@
+{
+  "name": "source_text_default_window",
+  "method": "GET",
+  "path": "/api/source/66fbae7cc0b742d1b96201c108798f4c/text",
+  "status": 200,
+  "response_headers": {},
+  "response_body": {
+    "doc_uid": "66fbae7cc0b742d1b96201c108798f4c",
+    "title": "三下乡报名通知（修订标题）",
+    "doc_type": "txt",
+    "line_start": 1,
+    "line_end": 4,
+    "line_count": 4,
+    "page": null,
+    "section": "三下乡报名通知",
+    "deactivated_kind": "",
+    "lines": [
+      "L1: 三下乡报名通知",
+      "L2: 第一条 三下乡报名通知适用于全校在读学生，自2026年6月1日起施行。",
+      "L3: 第二条 违反本规定的，视情节给予批评教育或相应处分。",
+      "L4: 第三条 本办法由团委负责解释。"
+    ]
+  },
+  "note": "默认 frm=1,to=80"
+}
