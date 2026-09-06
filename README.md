@@ -14,6 +14,27 @@
 
 ## 本地运行
 
+### 当前 worktree 试用（Windows PowerShell 7）
+
+本轮改版为“校园知事”：明亮粉蓝界面、Markdown 回答、默认折叠的原文卡片和真实 SSE 工作步骤。聊天、资料库、登录和管理界面均支持手机。
+
+```powershell
+# 首次安装和构建；当前 worktree 已执行过
+npm.cmd --prefix frontend ci
+npm.cmd --prefix frontend run build
+
+# 从仓库根目录启动；如 8011 被占用，可传 -Port 8012
+pwsh -NoProfile -File ./scripts/start-local.ps1
+```
+
+用户端 `http://127.0.0.1:8011/`；管理端 `http://127.0.0.1:8011/#/admin`。本机本轮试用访问码为 `webui-2026`，管理员初始密码为 `admin`；全新数据目录需管理员先设置访问码并发布资料。初始密码不会覆盖已有密码。
+
+启动脚本优先使用当前目录的 `.venv` 和 `.env`，缺失时读取主仓库的同名路径，**不复制或打印密钥**。数据固定写入当前 worktree 的 `.local-acceptance/webui-data`，不使用原仓库的 `backend/data` 或旧验收数据。可用 `-Python`、`-ConfigFile` 显式传入私有路径。前台运行时 `Ctrl+C` 停止；当前已有服务时直接访问，不重复启动。模型问答仍会调用外部 API，可能产生费用。
+
+本轮结果与证据边界见 [WebUI 改版验收记录](docs/WebUI改版验收记录-2026-09-06.md)。下面是新机器的普通环境安装方式；worktree 试用优先使用上面的隔离脚本。
+
+### 普通环境安装
+
 ```bash
 # 0) 环境依赖：Python 3.12 + Node 20+；密钥在根目录 .env（不入 git）
 python -m venv .venv
@@ -41,7 +62,7 @@ cd frontend && npm install && npm run build && cd ..
 ## 测试与验证
 
 ```bash
-.venv/Scripts/python -m pytest -q                       # 根目录运行，79 项离线测试
+.venv/Scripts/python -m pytest -q                       # 根目录运行，81 项离线测试
 .venv/Scripts/python backend/scripts/verify_compat.py    # 外部服务兼容性（需网络；结果写入 .local-acceptance）
 .venv/Scripts/python backend/scripts/e2e_real.py         # 真实模型端到端（需网络与密钥）
 ```
@@ -50,10 +71,10 @@ cd frontend && npm install && npm run build && cd ..
 
 ```bash
 npm ci
-npm test                      # 12 项组件/API 测试
+npm test                      # 18 项组件/API 测试
 npm run build                 # TypeScript + 生产构建
 npx playwright install chromium  # 仅本地测试机安装，服务器不安装浏览器
-npm run test:e2e               # 桌面/手机 Chromium 共 4 项，模拟 API
+npm run test:e2e               # 桌面/手机 Chromium 共 10 项，模拟 API
 ```
 
 离线测试使用合成资料和隔离临时库。真实端到端脚本也使用临时库，不修改正式访问码或资料，但仍会调用付费外部服务，需先准备指定的真实测试包。旧版兼容性 PASS 不代表审查修复后已通过；人工验收、真实反代复验及 1C1G 压测未完成前不得上线。
