@@ -36,7 +36,11 @@ impl std::fmt::Display for NpyError {
             Self::InvalidMagic => write!(f, "无效的 NPY 魔数"),
             Self::HeaderTooLarge => write!(f, "NPY 文件头超过 10,000 字节限制"),
             Self::ParseError(msg) => write!(f, "NPY 解析错误: {}", msg),
-            Self::UnsupportedDtype(d) => write!(f, "不支持的 dtype: {}（仅支持 native float32: '<f4' 或 '=f4'）", d),
+            Self::UnsupportedDtype(d) => write!(
+                f,
+                "不支持的 dtype: {}（仅支持 native float32: '<f4' 或 '=f4'）",
+                d
+            ),
             Self::UnsupportedDimension(d) => write!(f, "不支持的维度: {}（仅支持 2 维矩阵）", d),
             Self::NonFiniteValues => write!(f, "向量数据包含 NaN 或 Inf"),
             Self::ZeroNormRow(r) => write!(f, "第 {} 行向量模长为零或非归一化", r),
@@ -75,7 +79,10 @@ pub fn parse_npy_header<R: Read + Seek>(reader: &mut R) -> Result<NpyHeader, Npy
         reader.read_exact(&mut len_bytes)?;
         u32::from_le_bytes(len_bytes) as usize
     } else {
-        return Err(NpyError::ParseError(format!("不支持的 NPY 版本: {}.{}", major, minor)));
+        return Err(NpyError::ParseError(format!(
+            "不支持的 NPY 版本: {}.{}",
+            major, minor
+        )));
     };
 
     if header_len > MAX_HEADER_BYTES {
@@ -127,7 +134,7 @@ fn parse_dict_field(header: &str, field: &str) -> Option<String> {
         let end_idx = rest[1..].find(quote)?;
         Some(rest[1..1 + end_idx].to_string())
     } else {
-        let end_idx = rest.find(|c| c == ',' || c == '}' || c == ')')?;
+        let end_idx = rest.find([',', '}', ')'])?;
         Some(rest[..end_idx].trim().to_string())
     }
 }
@@ -191,7 +198,9 @@ pub fn scan_vector_rows<R: Read + Seek>(
 
             // 收集位于 [chunk_start_row, chunk_end_row) 范围内的候选行
             let mut batch_rows = Vec::new();
-            while current_idx < sorted_candidates.len() && sorted_candidates[current_idx] < chunk_end_row {
+            while current_idx < sorted_candidates.len()
+                && sorted_candidates[current_idx] < chunk_end_row
+            {
                 batch_rows.push(sorted_candidates[current_idx]);
                 current_idx += 1;
             }
@@ -305,10 +314,13 @@ impl VectorIndex {
 
             let mut guard = self.handles.lock().unwrap();
             // 句柄缓存淘汰：最多 8 个
-            if !guard.contains_key(&pkg_id) && guard.len() >= 8 {
-                if let Some(&victim) = guard.keys().next() {
-                    guard.remove(&victim);
-                }
+            let victim = if !guard.contains_key(&pkg_id) && guard.len() >= 8 {
+                guard.keys().next().copied()
+            } else {
+                None
+            };
+            if let Some(v) = victim {
+                guard.remove(&v);
             }
 
             let entry = if let Some(e) = guard.get_mut(&pkg_id) {
@@ -388,7 +400,11 @@ mod tests {
             assert_eq!(r_f, i);
 
             let diff_cf = (score_c - score_f).abs();
-            assert!(diff_cf < 1e-5, "C 与 Fortran 布局计算得分必须一致: {}", diff_cf);
+            assert!(
+                diff_cf < 1e-5,
+                "C 与 Fortran 布局计算得分必须一致: {}",
+                diff_cf
+            );
 
             let diff_expected = (score_c - expected_scores[i]).abs();
             assert!(

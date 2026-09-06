@@ -100,7 +100,8 @@ pub async fn allowed_doc_ids(
 
         // 领域标签过滤
         if let Some(doms) = &domains {
-            if !doms.is_empty() {
+            let has_domains = !doms.is_empty();
+            if has_domains {
                 let marks = doms.iter().map(|_| "?").collect::<Vec<_>>().join(",");
                 let query_sql = format!(
                     "SELECT DISTINCT doc_id FROM doc_tags WHERE tag IN ({})",
@@ -412,16 +413,20 @@ mod tests {
 
         // 建立内存 FTS5 库与语料
         let conn = Connection::open_in_memory().unwrap();
-        conn.execute_batch(
-            "CREATE VIRTUAL TABLE chunks_fts USING fts5(body);",
-        )
-        .unwrap();
+        conn.execute_batch("CREATE VIRTUAL TABLE chunks_fts USING fts5(body);")
+            .unwrap();
 
         let jieba_fixture_path = Path::new("tests/fixtures/tokenize/jieba_golden.json");
         let jieba_content = fs::read_to_string(jieba_fixture_path).expect("读取分词夹具失败");
         let jieba_fixture: Value = serde_json::from_str(&jieba_content).unwrap();
 
-        for (i, item) in jieba_fixture["corpus"].as_array().unwrap().iter().take(12).enumerate() {
+        for (i, item) in jieba_fixture["corpus"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .take(12)
+            .enumerate()
+        {
             let text = item["text"].as_str().unwrap();
             let body = tokenize_for_fts(text);
             conn.execute(
@@ -460,7 +465,11 @@ mod tests {
                 let exp_score = expected["bm25"].as_f64().unwrap();
 
                 let (act_rowid, act_score) = actual_hits[idx];
-                assert_eq!(act_rowid, exp_rowid, "命中 rowid 顺序不一致: query={}", query);
+                assert_eq!(
+                    act_rowid, exp_rowid,
+                    "命中 rowid 顺序不一致: query={}",
+                    query
+                );
 
                 let diff = (act_score - exp_score).abs();
                 assert!(
@@ -486,25 +495,45 @@ mod tests {
         let vectors = VectorIndex::new(legacy_data_dir.join("vectors"));
 
         // 1. 测试 allowed_doc_ids（现行过滤 + 画像过滤）
-        let all_current = allowed_doc_ids(&db, "current", None, None, None).await.unwrap();
+        let all_current = allowed_doc_ids(&db, "current", None, None, None)
+            .await
+            .unwrap();
         assert_eq!(all_current.len(), 6);
 
         let mut profile = HashMap::new();
         profile.insert("college".to_string(), "信息工程学院".to_string());
         profile.insert("entry_year".to_string(), "2025".to_string());
 
-        let profile_ids = allowed_doc_ids(&db, "current", None, None, Some(&profile)).await.unwrap();
-        assert_eq!(profile_ids.len(), 6, "全校通用文档在具体学生画像下应全部保留");
+        let profile_ids = allowed_doc_ids(&db, "current", None, None, Some(&profile))
+            .await
+            .unwrap();
+        assert_eq!(
+            profile_ids.len(),
+            6,
+            "全校通用文档在具体学生画像下应全部保留"
+        );
 
         // 2. 混合检索（FTS 命中）
-        let hits = search(&db, &vectors, "三下乡 报名", None, &all_current, 5, None).await.unwrap();
+        let hits = search(&db, &vectors, "三下乡 报名", None, &all_current, 5, None)
+            .await
+            .unwrap();
         assert!(!hits.is_empty(), "三下乡报名应能命中结果");
         assert!(hits[0].title.contains("三下乡"));
         assert!(hits[0].score > 0.0);
 
         // 3. 混合检索（带向量融合）
         let dummy_vec = vec![0.0f32; 1024]; // 1024 维零向量
-        let hits_with_vec = search(&db, &vectors, "三下乡 报名", Some(&dummy_vec), &all_current, 5, None).await.unwrap();
+        let hits_with_vec = search(
+            &db,
+            &vectors,
+            "三下乡 报名",
+            Some(&dummy_vec),
+            &all_current,
+            5,
+            None,
+        )
+        .await
+        .unwrap();
         assert!(!hits_with_vec.is_empty());
         assert_eq!(hits_with_vec[0].doc_uid, hits[0].doc_uid);
     }

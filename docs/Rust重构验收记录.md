@@ -34,3 +34,16 @@ jieba 分词 golden 15 语料 + 7 查询；FTS bm25 golden；NPY C/Fortran 与 5
 | Release 编译 | `cargo build --release` (WSL) | 成功产出优化二进制 `campus_policy_backend` |
 
 M1 出阶段门槛：token 双向互认、旧库目录/原文/版本可读、指标接口、编译零警告全部达成。
+
+## M2：NPY 流式读取、分词、FTS、范围、Top-K/RRF 融合与 D1 基准初测（2026-09-06）
+
+| 项 | 命令 | 结果 |
+| --- | --- | --- |
+| NPY 流式读取与头校验 | `cargo test vectors` (WSL) | 严格解析 NPY 1.0/2.0 头，工作缓冲上限 4MB；验证 C 与 Fortran 两种矩阵布局计算点积与 golden 偏差 `< 1e-5`；拦截大端、float64、一维、NaN 异常样本 |
+| jieba 分词与查询构造 | `cargo test tokenizer` (WSL) | 15 项真实长句与标点语料 `jieba_golden.json` 逐 token 顺序与空格连接 100% 对齐；7 组特殊查询（含中英混排、标点、长字符）MATCH 表达式 100% 对齐 |
+| FTS5 bm25 分值与排序 | `cargo test test_fts_bm25_golden_alignment` (WSL) | 5 组多词检索命中 rowid 序列与 bm25 升序分值与 SQLite FTS5 golden 偏差 `< 1e-5` 完全对齐 |
+| RRF 排名融合与范围过滤 | `cargo test test_hybrid_search_with_legacy_fixtures` (WSL) | 现行/往年过滤、学院/年级受众过滤、领域标签约束生效；FTS 与向量 RRF (k=60) 融合排序，详细返回 SearchHit（含 PDF 页码映射与原文切片） |
+| D1 合成数据集基准实测 | `cargo run --release --bin bench_d1` (WSL) | **100 份文档、10,000 分块、1024 维 (39.1 MiB 裸向量)** 全库扫描：<br>• 100 次混合检索耗时 2.03s（平均 20.3ms）<br>• **p95 延迟: 0.025s**（远低于规范要求 3.0s）<br>• **进程常驻 RSS: 88.23 MiB**（远低于规范门槛 160.0 MiB，内存增量仅 81.75 MiB） |
+| 代码质量校验 | `cargo clippy --all-targets --locked -- -D warnings` & `cargo fmt --check` (WSL) | **0 warnings, 0 errors**，所有单元测试与集成测试（共 20 项）全部通过 |
+
+M2 出阶段门槛：分词 golden 对齐、FTS bm25 对齐、C/Fortran NPY 对齐、D1 内存 (88.23MB < 160MB) 与 p95 延迟 (0.025s < 3.0s) 全部达标。

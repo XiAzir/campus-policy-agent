@@ -41,6 +41,6 @@ regex = "1.11"
 # 压缩包与向量读取（预留）
 zip = { version = "2.2", default-features = false, features = ["deflate"] }
 npyz = "0.8"
+tempfile = "3.17"
 
 [dev-dependencies]
-tempfile = "3.17"
