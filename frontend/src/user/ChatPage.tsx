@@ -52,7 +52,11 @@ export default function ChatPage() {
 
   useEffect(() => {
     idb.recoverInterrupted().then(rows => { setChats(rows); setCurrent(rows[0] || null); });
-    idb.getPrefs().then((p) => p && setPrefs(p));
+    if (!localStorage.getItem("cpa.prefs")) {
+      idb.getPrefs().then((p) => {
+        if (p) { setPrefs(p); prefsToStorage(p); }
+      });
+    }
     api.catalog().then((r) => setCatalog(r.documents)).catch(() => {});
     const interrupt = () => abortRef.current?.abort();
     const visibility = () => { if (document.hidden) interrupt(); };
@@ -83,10 +87,12 @@ export default function ChatPage() {
   };
 
   const updatePrefs = (p: Partial<UserPrefs>) => {
-    const next = { ...prefs, ...p };
-    setPrefs(next);
-    prefsToStorage(next);
-    idb.putPrefs(next);
+    setPrefs(currentPrefs => {
+      const next = { ...currentPrefs, ...p };
+      prefsToStorage(next);
+      void idb.putPrefs(next);
+      return next;
+    });
   };
 
   const openChat = async (id: string) => {

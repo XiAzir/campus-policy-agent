@@ -89,3 +89,16 @@ test("pagehide aborts the live request", async () => {
   await waitFor(() => expect(signal.aborted).toBe(true));
   await waitFor(async () => expect((await idb.listChats())[0].messages.at(-1)?.pending).toBe(false));
 });
+
+test("rapid preference edits persist as one merged snapshot", async () => {
+  render(<ChatPage />);
+  await new Promise(resolve => setTimeout(resolve, 20));
+  await userEvent.click(screen.getByRole("button", { name: /个人设置/ }));
+  await userEvent.type(screen.getByPlaceholderText("如：信息工程学院"), "信息工程学院");
+  await userEvent.type(screen.getByPlaceholderText("如：2024"), "2024");
+  await userEvent.click(screen.getByText("指定文件", { exact: true }));
+  await waitFor(async () => {
+    expect(await idb.getPrefs()).toMatchObject({ college: "信息工程学院", entryYear: "2024", scopeMode: "files", docUids: ["doc-1"] });
+  });
+  expect(JSON.parse(localStorage.getItem("cpa.prefs") || "{}")).toMatchObject({ college: "信息工程学院", entryYear: "2024", scopeMode: "files", docUids: ["doc-1"] });
+});

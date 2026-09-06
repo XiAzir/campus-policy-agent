@@ -4,6 +4,7 @@ import type { ChatRecord, StoredMessage, UserPrefs } from "./types";
 
 const DB_NAME = "cpa-user";
 const DB_VERSION = 1;
+let prefsWrites: Promise<unknown> = Promise.resolve();
 
 function open(): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {
@@ -58,8 +59,12 @@ export const idb = {
   clearChats: (): Promise<unknown> => tx("chats", "readwrite", (s) => s.clear()),
 
   getPrefs: (): Promise<UserPrefs | undefined> =>
-    tx<UserPrefs | undefined>("prefs", "readonly", (s) => s.get("prefs") as IDBRequest<UserPrefs | undefined>),
-  putPrefs: (p: UserPrefs): Promise<unknown> => tx("prefs", "readwrite", (s) => s.put(p, "prefs")),
+    prefsWrites.then(() => tx<UserPrefs | undefined>("prefs", "readonly", (s) => s.get("prefs") as IDBRequest<UserPrefs | undefined>)),
+  putPrefs: (p: UserPrefs): Promise<unknown> => {
+    const snapshot = structuredClone(p);
+    prefsWrites = prefsWrites.catch(() => undefined).then(() => tx("prefs", "readwrite", (s) => s.put(snapshot, "prefs")));
+    return prefsWrites;
+  },
 
   /** 导出聊天与设置为 JSON（不含访问码/令牌）。 */
   exportAll: async (): Promise<Blob> => {
