@@ -42,7 +42,7 @@ cd frontend && npm install && npm run build && cd ..
 
 ```bash
 .venv/Scripts/python -m pytest -q                       # 根目录运行，79 项离线测试
-.venv/Scripts/python backend/scripts/verify_compat.py    # 外部服务兼容性（需网络）
+.venv/Scripts/python backend/scripts/verify_compat.py    # 外部服务兼容性（需网络；结果写入 .local-acceptance）
 .venv/Scripts/python backend/scripts/e2e_real.py         # 真实模型端到端（需网络与密钥）
 ```
 
@@ -57,6 +57,8 @@ npm run test:e2e               # 桌面/手机 Chromium 共 4 项，模拟 API
 ```
 
 离线测试使用合成资料和隔离临时库。真实端到端脚本也使用临时库，不修改正式访问码或资料，但仍会调用付费外部服务，需先准备指定的真实测试包。旧版兼容性 PASS 不代表审查修复后已通过；人工验收、真实反代复验及 1C1G 压测未完成前不得上线。
+
+本机人工验收不要直接操作已有的 `backend/data`。请从 [人工测试清单](docs/人工测试清单.md) 的“本机验收准备”开始，使用 `.local-acceptance/data` 隔离目录和端口 8010。
 
 ## 部署（Ubuntu 24.04，1C1G）
 

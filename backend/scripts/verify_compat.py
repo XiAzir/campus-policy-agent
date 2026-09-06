@@ -13,6 +13,7 @@
 from __future__ import annotations
 
 import asyncio
+import argparse
 import json
 import os
 import sqlite3
@@ -272,7 +273,7 @@ def citation_roundtrip() -> None:
     record("引用确定性 ID", ok, f"生成并解析 {cid[:20]}…:12-15")
 
 
-async def main() -> None:
+async def main(output: Path | None = None) -> None:
     print(f"模型: {GEMINI_MODEL} / {SF_MODEL}（密钥不打印）")
     async with httpx.AsyncClient() as client:
         for check in (gemini_basic, gemini_function_call, gemini_stream, embedding_dims):
@@ -290,7 +291,7 @@ async def main() -> None:
     lines = ["# 兼容性验证结果", "", f"运行时间：{time.strftime('%Y-%m-%d %H:%M:%S')}", ""]
     for r in RESULTS:
         lines.append(f"- [{'PASS' if r['ok'] else 'FAIL'}] **{r['step']}** — {r['detail']}")
-    out = REPO / "docs" / "兼容性验证.md"
+    out = output or REPO / ".local-acceptance" / "兼容性验证.md"
     out.parent.mkdir(exist_ok=True)
     out.write_text("\n".join(lines) + "\n", encoding="utf-8")
     print(f"\n结果已写入 {out}")
@@ -301,4 +302,7 @@ async def main() -> None:
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--output", type=Path, help="结果文件；默认写入忽略目录 .local-acceptance")
+    args = parser.parse_args()
+    asyncio.run(main(args.output))
