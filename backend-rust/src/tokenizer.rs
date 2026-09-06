@@ -5,9 +5,8 @@ use std::sync::LazyLock;
 static JIEBA: LazyLock<Jieba> = LazyLock::new(Jieba::new);
 
 // Python 基线正则: r'^[^\s"\'()*:{}]+$'
-static FT_SAFE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r#"^[^\s"'()*:{}]+$"#).expect("编译 FTS 安全词正则失败")
-});
+static FT_SAFE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r#"^[^\s"'()*:{}]+$"#).expect("编译 FTS 安全词正则失败"));
 
 /// 针对 FTS 写入的分词：按 jieba 搜索模式切词、去除空白后用单个空格连接
 pub fn tokenize_for_fts(text: &str) -> String {
