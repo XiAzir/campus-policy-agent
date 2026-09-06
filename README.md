@@ -50,7 +50,7 @@ cd frontend && npm install && npm run build && cd ..
 
 ```bash
 npm ci
-npm test                      # 11 项组件/API 测试
+npm test                      # 12 项组件/API 测试
 npm run build                 # TypeScript + 生产构建
 npx playwright install chromium  # 仅本地测试机安装，服务器不安装浏览器
 npm run test:e2e               # 桌面/手机 Chromium 共 4 项，模拟 API
