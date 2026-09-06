@@ -1,4 +1,6 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
+import { Download, FileText, LoaderCircle, X } from "lucide-react";
+import Modal from "../ui/Modal";
 import type { Citation } from "../types";
 import { api } from "../api";
 
@@ -15,28 +17,31 @@ export default function CitationPopup({
   const [downloading, setDownloading] = useState(false);
   const ctxFrom = Math.max(1, citation.line_start - 3);
   const ctxTo = citation.line_end + 3;
-  const ref = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
+    let active = true;
+    setText(null);
+    setError("");
     api
       .sourceText(citation.doc_uid, ctxFrom, ctxTo)
-      .then(setText)
-      .catch((e) => setError(e instanceof Error ? e.message : "读取失败"));
+      .then(value => { if (active) setText(value); })
+      .catch((e) => { if (active) setError(e instanceof Error ? e.message : "读取失败"); });
+    return () => { active = false; };
   }, [citation.doc_uid, ctxFrom, ctxTo]);
 
   return (
-    <div className="modal-backdrop" onClick={onClose}>
-      <div className="modal" ref={ref} onClick={(e) => e.stopPropagation()}>
+    <Modal onClose={onClose} label="原文追溯">
         <div className="modal-head">
           <div>
+            <span className="eyebrow"><FileText size={14} /> 原文追溯</span>
             <h3>{citation.title}</h3>
             <div className="muted">
               {citation.section ? `${citation.section} · ` : ""}行 {citation.line_start}–{citation.line_end}
               {citation.page != null ? ` · PDF 第 ${citation.page} 页` : ""}
             </div>
           </div>
-          <button className="ghost" onClick={onClose}>
-            关闭
+          <button className="icon-button" title="关闭" aria-label="关闭" onClick={onClose}>
+            <X size={20} />
           </button>
         </div>
 
@@ -50,7 +55,9 @@ export default function CitationPopup({
           </div>
         )}
 
-        <h4>标准化原文（含上下文，历史版本仍可打开）</h4>
+        <h4 className="context-heading">原文上下文</h4>
+        {!text && !error && <div className="loading-inline" role="status"><LoaderCircle size={17} className="spin" /> 正在读取原文</div>}
+        {text?.deactivated_kind && <p className="version-notice">历史版本 · {text.deactivated_kind === "manual" ? "已手动停用" : "已被新版替代"}</p>}
         {error && <div className="error">{error}</div>}
         {text && (
           <div className="lines-box">
@@ -68,14 +75,13 @@ export default function CitationPopup({
           </div>
         )}
         <div className="row-actions">
-          <button disabled={downloading} onClick={async () => {
+          <button className="primary-button" disabled={downloading} onClick={async () => {
             setDownloading(true);
             try { await api.downloadSource(citation.doc_uid); }
             catch (e) { setError(e instanceof Error ? e.message : "下载失败"); }
             finally { setDownloading(false); }
-          }}>{downloading ? "下载中" : "下载原文件"}</button>
+          }}><Download size={16} />{downloading ? "下载中" : "下载原文件"}</button>
         </div>
-      </div>
-    </div>
+    </Modal>
   );
 }

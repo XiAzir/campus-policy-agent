@@ -1,4 +1,6 @@
 import { useEffect, useState } from "react";
+import { ArchiveRestore, Files, LogOut, PackageOpen, Settings2 } from "lucide-react";
+import Brand from "../ui/Brand";
 import type { AdminPackage, CatalogDoc, VersionInfo } from "../types";
 import {
   adminLogout,
@@ -36,6 +38,7 @@ function AdminLogin({ onOk }: { onOk: () => void }) {
   return (
     <div className="center-page">
       <form className="login-card" onSubmit={submit}>
+        <Brand />
         <h1>管理端</h1>
         <p className="muted">仅管理员使用。请勿外传本页面地址。</p>
         <input
@@ -64,7 +67,7 @@ function Dashboard({ onLogout }: { onLogout: () => void }) {
     <div className="app admin">
       <aside className="sidebar">
         <div className="side-head">
-          <strong>管理控制台</strong>
+          <Brand />
         </div>
         <div className="chat-list">
           {(
@@ -75,13 +78,14 @@ function Dashboard({ onLogout }: { onLogout: () => void }) {
               ["backup", "备份与恢复"],
             ] as [Tab, string][]
           ).map(([t, label]) => (
-            <div key={t} className={"chat-item" + (tab === t ? " active" : "")} onClick={() => setTab(t)}>
+            <button key={t} className={"chat-item" + (tab === t ? " active" : "")} onClick={() => setTab(t)}>
+              {t === "packages" ? <PackageOpen size={18} /> : t === "documents" ? <Files size={18} /> : t === "settings" ? <Settings2 size={18} /> : <ArchiveRestore size={18} />}
               <span className="chat-title">{label}</span>
-            </div>
+            </button>
           ))}
         </div>
         <div className="side-foot">
-          <button onClick={onLogout}>退出登录</button>
+          <button onClick={onLogout}><LogOut size={16} />退出登录</button>
         </div>
       </aside>
       <main className="main admin-main">
