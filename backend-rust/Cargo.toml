@@ -1,0 +1,44 @@
+[package]
+name = "campus_policy_backend"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+# 异步运行时与 Web 框架
+tokio = { version = "1.43", features = ["full"] }
+axum = { version = "0.8", features = ["multipart"] }
+tower = { version = "0.5", features = ["util"] }
+tower-http = { version = "0.6", features = ["cors", "fs"] }
+
+# 序列化与数据格式
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+# 密码学与安全（RustCrypto 栈）
+pbkdf2 = { version = "0.12", features = ["simple"] }
+sha2 = "0.10"
+hmac = "0.12"
+subtle = "2.6"
+hex = "0.4"
+base64 = "0.22"
+rand = "0.8"
+
+# 数据库与本地存储
+rusqlite = { version = "0.33", features = ["bundled", "backup", "vtab"] }
+
+# HTTP 客户端（与上游 Gemini / 硅基流动通信）
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "stream"] }
+
+# 系统指标与时间
+chrono = { version = "0.4", features = ["serde"] }
+sysinfo = "0.33"
+
+# 分词（Spec 7.1，预留）
+jieba-rs = "0.7"
+
+# 压缩包与向量读取（预留）
+zip = { version = "2.2", default-features = false, features = ["deflate"] }
+npyz = "0.8"
+
+[dev-dependencies]
+tempfile = "3.17"
