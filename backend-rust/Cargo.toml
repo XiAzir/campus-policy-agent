@@ -35,6 +35,7 @@ sysinfo = "0.33"
 
 # 分词（Spec 7.1，预留）
 jieba-rs = "0.7"
+regex = "1.11"
 
 # 压缩包与向量读取（预留）
 zip = { version = "2.2", default-features = false, features = ["deflate"] }
