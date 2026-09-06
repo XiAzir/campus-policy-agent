@@ -1,0 +1,293 @@
+use crate::config::Config;
+use crate::metrics::TurnMetrics;
+use futures_util::StreamExt;
+use reqwest::header::HeaderMap;
+use serde_json::Value;
+use std::fmt;
+use std::time::Duration;
+
+#[derive(Debug)]
+pub enum LlmError {
+    Unreachable(String),
+    BadStatus(u16),
+    InvalidResponse(String),
+    EmbeddingFailed(String),
+}
+
+impl fmt::Display for LlmError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Unreachable(msg) => write!(f, "模型服务不可达：{}", msg),
+            Self::BadStatus(code) => write!(f, "模型调用失败 HTTP {}", code),
+            Self::InvalidResponse(msg) => write!(f, "模型响应结构异常：{}", msg),
+            Self::EmbeddingFailed(msg) => write!(f, "向量化失败：{}", msg),
+        }
+    }
+}
+
+impl std::error::Error for LlmError {}
+
+pub enum StreamEvent {
+    Text(String),
+    Parts(Vec<Value>),
+}
+
+pub struct GeminiClient {
+    client: reqwest::Client,
+    base_url: String,
+    model: String,
+    api_key: String,
+}
+
+impl GeminiClient {
+    pub fn new(config: &Config) -> Self {
+        let client = reqwest::Client::builder()
+            .timeout(Duration::from_secs(120))
+            .connect_timeout(Duration::from_secs(15))
+            .build()
+            .unwrap_or_default();
+
+        Self {
+            client,
+            base_url: config.gemini_base_url.trim_end_matches('/').to_string(),
+            model: config.gemini_model.clone(),
+            api_key: config.gemini_api_key.clone(),
+        }
+    }
+
+    pub fn with_client(
+        client: reqwest::Client,
+        base_url: String,
+        model: String,
+        api_key: String,
+    ) -> Self {
+        Self {
+            client,
+            base_url: base_url.trim_end_matches('/').to_string(),
+            model,
+            api_key,
+        }
+    }
+
+    pub async fn stream(
+        &self,
+        contents: Vec<Value>,
+        system: Option<String>,
+        tools: Option<Value>,
+        temperature: f64,
+        metrics: Option<&TurnMetrics>,
+        mut on_event: impl FnMut(StreamEvent),
+    ) -> Result<(), LlmError> {
+        let url = format!(
+            "{}/models/{}:streamGenerateContent?alt=sse",
+            self.base_url, self.model
+        );
+
+        let mut payload = serde_json::json!({
+            "contents": contents,
+            "generationConfig": {
+                "temperature": temperature
+            }
+        });
+
+        if let Some(sys_text) = system {
+            payload["systemInstruction"] = serde_json::json!({
+                "parts": [{ "text": sys_text }]
+            });
+        }
+        if let Some(t) = tools {
+            payload["tools"] = t;
+        }
+
+        if let Some(m) = metrics {
+            m.inc_model_calls();
+        }
+
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "x-goog-api-key",
+            self.api_key
+                .parse()
+                .map_err(|_| LlmError::InvalidResponse("无效的 x-goog-api-key 请求头".into()))?,
+        );
+
+        let response = self
+            .client
+            .post(&url)
+            .headers(headers)
+            .json(&payload)
+            .send()
+            .await
+            .map_err(|e| LlmError::Unreachable(e.to_string()))?;
+
+        if !response.status().is_success() {
+            return Err(LlmError::BadStatus(response.status().as_u16()));
+        }
+
+        let mut byte_stream = response.bytes_stream();
+        let mut buffer = String::new();
+        let mut collected_parts: Vec<Value> = Vec::new();
+        let mut final_usage: Option<Value> = None;
+
+        while let Some(chunk_res) = byte_stream.next().await {
+            let chunk = chunk_res.map_err(|e| LlmError::Unreachable(e.to_string()))?;
+            let chunk_str = String::from_utf8_lossy(&chunk);
+            buffer.push_str(&chunk_str);
+
+            while let Some(idx) = buffer.find('\n') {
+                let line: String = buffer.drain(..=idx).collect();
+                let trimmed = line.trim();
+                if !trimmed.starts_with("data:") {
+                    continue;
+                }
+                let data = trimmed["data:".len()..].trim();
+                if data.is_empty() {
+                    continue;
+                }
+
+                let Ok(json_obj) = serde_json::from_str::<Value>(data) else {
+                    continue;
+                };
+
+                if let Some(usage) = json_obj.get("usageMetadata") {
+                    final_usage = Some(usage.clone());
+                }
+
+                if let Some(candidates) = json_obj.get("candidates").and_then(|c| c.as_array()) {
+                    let first_cand_opt = candidates.first();
+                    if let Some(first_cand) = first_cand_opt {
+                        let parts_opt = first_cand
+                            .get("content")
+                            .and_then(|c| c.get("parts"))
+                            .and_then(|p| p.as_array());
+                        if let Some(parts) = parts_opt {
+                            for p in parts {
+                                collected_parts.push(p.clone());
+                                // 必须不是 thought 才外发
+                                let is_thought =
+                                    p.get("thought").and_then(|t| t.as_bool()).unwrap_or(false);
+                                let text_opt = p.get("text").and_then(|t| t.as_str());
+                                if let (false, Some(txt)) = (is_thought, text_opt) {
+                                    on_event(StreamEvent::Text(txt.to_string()));
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        if let (Some(m), Some(usage)) = (metrics, final_usage) {
+            let prompt = usage
+                .get("promptTokenCount")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let output = usage
+                .get("candidatesTokenCount")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let thought = usage
+                .get("thoughtsTokenCount")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            m.record_model_usage(prompt, output, thought);
+        }
+
+        on_event(StreamEvent::Parts(collected_parts));
+        Ok(())
+    }
+}
+
+pub async fn embed_query(
+    client: &reqwest::Client,
+    config: &Config,
+    text: &str,
+    dims: Option<usize>,
+    metrics: Option<&TurnMetrics>,
+) -> Result<Vec<f32>, LlmError> {
+    let target_dims = dims.unwrap_or(config.embed_dims);
+    let payload = serde_json::json!({
+        "model": config.siliconflow_model,
+        "input": [text],
+        "dimensions": target_dims
+    });
+
+    if let Some(m) = metrics {
+        m.inc_embedding_calls();
+    }
+
+    let url = format!(
+        "{}/embeddings",
+        config.siliconflow_base_url.trim_end_matches('/')
+    );
+    let res = client
+        .post(&url)
+        .header(
+            "Authorization",
+            format!("Bearer {}", config.siliconflow_api_key),
+        )
+        .json(&payload)
+        .send()
+        .await
+        .map_err(|e| LlmError::Unreachable(e.to_string()))?;
+
+    if !res.status().is_success() {
+        return Err(LlmError::BadStatus(res.status().as_u16()));
+    }
+
+    let res_json: Value = res
+        .json()
+        .await
+        .map_err(|e| LlmError::InvalidResponse(e.to_string()))?;
+
+    if let (Some(m), Some(usage)) = (metrics, res_json.get("usage")) {
+        let tokens = usage
+            .get("total_tokens")
+            .and_then(|t| t.as_u64())
+            .unwrap_or(0);
+        m.record_embedding_usage(tokens);
+    }
+
+    let vec_arr = res_json
+        .get("data")
+        .and_then(|d| d.as_array())
+        .and_then(|a| a.first())
+        .and_then(|d| d.get("embedding"))
+        .and_then(|e| e.as_array())
+        .ok_or_else(|| LlmError::InvalidResponse("缺少 embedding 数据".into()))?;
+
+    if vec_arr.len() != target_dims {
+        return Err(LlmError::EmbeddingFailed(format!(
+            "返回维度 {} 与预期 {} 不一致",
+            vec_arr.len(),
+            target_dims
+        )));
+    }
+
+    let mut vec = Vec::with_capacity(target_dims);
+    let mut norm_sq = 0.0f32;
+    for v in vec_arr {
+        let val = v
+            .as_f64()
+            .ok_or_else(|| LlmError::EmbeddingFailed("向量包含非法非浮点值".into()))?
+            as f32;
+        if !val.is_finite() {
+            return Err(LlmError::EmbeddingFailed(
+                "向量包含非有限值(NaN/Inf)".into(),
+            ));
+        }
+        norm_sq += val * val;
+        vec.push(val);
+    }
+
+    let norm = norm_sq.sqrt();
+    if norm <= 0.0 || !norm.is_finite() {
+        return Err(LlmError::EmbeddingFailed("查询向量为零向量或无效".into()));
+    }
+
+    for x in &mut vec {
+        *x /= norm;
+    }
+
+    Ok(vec)
+}

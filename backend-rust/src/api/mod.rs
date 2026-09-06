@@ -1,9 +1,12 @@
 pub mod error;
 pub mod handlers;
 
+use crate::agent::Agent;
 use crate::auth::{RateLimiter, TokenService};
+use crate::chat::ChatManager;
 use crate::config::Config;
 use crate::db::DbPool;
+use crate::vectors::VectorIndex;
 use axum::Router;
 use axum::routing::{get, post, put};
 use std::sync::Arc;
@@ -15,6 +18,9 @@ pub struct AppState {
     pub db: DbPool,
     pub tokens: TokenService,
     pub limiter: Arc<RateLimiter>,
+    pub vectors: Arc<VectorIndex>,
+    pub agent: Arc<Agent>,
+    pub chats: Arc<ChatManager>,
 }
 
 pub fn create_router(state: AppState) -> Router {
@@ -27,6 +33,8 @@ pub fn create_router(state: AppState) -> Router {
         .route("/source/{doc_uid}/text", get(handlers::source_text))
         .route("/source/{doc_uid}/file", get(handlers::source_file))
         .route("/source/{doc_uid}/versions", get(handlers::source_versions))
+        .route("/chat", post(handlers::chat))
+        .route("/chat/cancel", post(handlers::chat_cancel))
         .route("/admin/documents", get(handlers::admin_documents))
         .route(
             "/admin/documents/{doc_uid}/versions",

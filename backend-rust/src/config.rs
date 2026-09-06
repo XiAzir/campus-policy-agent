@@ -9,6 +9,7 @@ pub struct Config {
     pub gemini_model: String,
 
     // Embedding（硅基流动，查询侧；资料包内已带向量）
+    pub siliconflow_base_url: String,
     pub siliconflow_api_key: String,
     pub siliconflow_model: String,
     pub embed_dims: usize,
@@ -94,6 +95,12 @@ impl Config {
             gemini_api_key: get_env_or("GEMINI_API_KEY", ""),
             gemini_model: get_env_or("GEMINI_MODEL", ""),
 
+            siliconflow_base_url: get_env_or(
+                "SILICONFLOW_BASE_URL",
+                "https://api.siliconflow.cn/v1",
+            )
+            .trim_end_matches('/')
+            .to_string(),
             siliconflow_api_key: get_env_or("SILICONFLOW_API_KEY", ""),
             siliconflow_model: get_env_or("SILICONFLOW_EMBED_MODEL", ""),
             embed_dims: get_env_int("EMBED_DIMS", 1024),

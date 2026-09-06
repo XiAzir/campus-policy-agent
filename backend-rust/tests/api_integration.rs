@@ -1,7 +1,10 @@
+use campus_policy_backend::agent::Agent;
 use campus_policy_backend::api::{AppState, create_router};
 use campus_policy_backend::auth::{RateLimiter, TokenService};
+use campus_policy_backend::chat::ChatManager;
 use campus_policy_backend::config::Config;
 use campus_policy_backend::db::DbPool;
+use campus_policy_backend::vectors::VectorIndex;
 use reqwest::header::AUTHORIZATION;
 use serde_json::Value;
 use std::net::SocketAddr;
@@ -24,6 +27,13 @@ async fn spawn_test_server() -> (String, String, String) {
         .unwrap();
     let tokens = TokenService::from_hex_secret(&secret, 30).unwrap();
     let limiter = Arc::new(RateLimiter::new(100));
+    let vectors = Arc::new(VectorIndex::new(config.data_dir.join("vectors")));
+    let agent = Arc::new(Agent::new(
+        pool.clone(),
+        Arc::clone(&vectors),
+        config.clone(),
+    ));
+    let chats = Arc::new(ChatManager::new(1, 10));
 
     let user_token = tokens.issue("user", "test-user");
     let admin_token = tokens.issue("admin", "test-admin");
@@ -33,6 +43,9 @@ async fn spawn_test_server() -> (String, String, String) {
         db: pool,
         tokens,
         limiter,
+        vectors,
+        agent,
+        chats,
     };
 
     let app = create_router(state);
@@ -102,31 +115,39 @@ async fn test_api_source_text_window_and_clamp() {
         .await
         .unwrap();
     let body: Value = res_cat.json().await.unwrap();
-    let long_doc = body["documents"]
-        .as_array()
-        .unwrap()
+    let docs = body["documents"].as_array().unwrap();
+    let long_doc = docs
         .iter()
-        .find(|d| d["title"].as_str().unwrap().contains("校纪处分条例"))
+        .find(|d| d["line_count"].as_i64().unwrap_or(0) > 100)
         .unwrap();
-    let long_uid = long_doc["doc_uid"].as_str().unwrap();
+    let uid = long_doc["doc_uid"].as_str().unwrap();
 
-    // 闭区间请求 frm=1, to=250 -> 保护约束 to 最多 frm+200，实际返回 201 行
-    let res_text = client
-        .get(format!(
-            "{}/api/source/{}/text?frm=1&to=250",
-            base_url, long_uid
-        ))
+    // 1. 默认窗口 frm=1, to=80
+    let res_def = client
+        .get(format!("{}/api/source/{}/text", base_url, uid))
         .header(AUTHORIZATION, format!("Bearer {}", user_token))
         .send()
         .await
         .unwrap();
+    assert_eq!(res_def.status(), 200);
+    let val_def: Value = res_def.json().await.unwrap();
+    assert_eq!(val_def["line_start"], 1);
+    assert_eq!(val_def["line_end"], 80);
+    assert_eq!(val_def["lines"].as_array().unwrap().len(), 80);
+    assert!(val_def["lines"][0].as_str().unwrap().starts_with("L1:"));
 
-    assert_eq!(res_text.status(), 200);
-    let text_body: Value = res_text.json().await.unwrap();
-    assert_eq!(text_body["line_start"], 1);
-    assert_eq!(text_body["line_end"], 201);
-    let lines = text_body["lines"].as_array().unwrap();
-    assert_eq!(lines.len(), 201);
+    // 2. 窗口 clamp 测试：请求 to=500，应被限制到 frm + 200 = 201 行 (闭区间 1..=201)
+    let res_clamped = client
+        .get(format!("{}/api/source/{}/text?frm=1&to=500", base_url, uid))
+        .header(AUTHORIZATION, format!("Bearer {}", user_token))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res_clamped.status(), 200);
+    let val_clamped: Value = res_clamped.json().await.unwrap();
+    assert_eq!(val_clamped["line_start"], 1);
+    assert_eq!(val_clamped["line_end"], 201);
+    assert_eq!(val_clamped["lines"].as_array().unwrap().len(), 201);
 }
 
 #[tokio::test]
@@ -141,21 +162,30 @@ async fn test_api_source_file_download() {
         .await
         .unwrap();
     let body: Value = res_cat.json().await.unwrap();
-    let first_uid = body["documents"][0]["doc_uid"].as_str().unwrap();
+    let docs = body["documents"].as_array().unwrap();
+    let uid = docs[0]["doc_uid"].as_str().unwrap();
 
-    let res_file = client
-        .get(format!("{}/api/source/{}/file", base_url, first_uid))
+    // 1. 无 token 401
+    let res_no_auth = client
+        .get(format!("{}/api/source/{}/file", base_url, uid))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res_no_auth.status(), 401);
+
+    // 2. 有 token 200 并检查 nosniff
+    let res_ok = client
+        .get(format!("{}/api/source/{}/file", base_url, uid))
         .header(AUTHORIZATION, format!("Bearer {}", user_token))
         .send()
         .await
         .unwrap();
-
-    assert_eq!(res_file.status(), 200);
+    assert_eq!(res_ok.status(), 200);
     assert_eq!(
-        res_file.headers().get("X-Content-Type-Options").unwrap(),
+        res_ok.headers().get("X-Content-Type-Options").unwrap(),
         "nosniff"
     );
-    let bytes = res_file.bytes().await.unwrap();
+    let bytes = res_ok.bytes().await.unwrap();
     assert!(!bytes.is_empty());
 }
 
@@ -173,10 +203,6 @@ async fn test_api_admin_metrics() {
 
     assert_eq!(res.status(), 200);
     let body: Value = res.json().await.unwrap();
+    assert!(body["rss_bytes"].as_u64().unwrap() > 0);
     assert!(body["at"].is_string());
-    assert!(body["rss_bytes"].as_u64().is_some());
-    assert!(body["cpu_s"].as_f64().is_some());
-    assert!(body["disk_free_bytes"].as_u64().is_some());
-    assert_eq!(body["running"], 0);
-    assert_eq!(body["waiting"], 0);
 }

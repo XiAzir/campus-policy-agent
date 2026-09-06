@@ -1,18 +1,29 @@
+use crate::agent::TurnScope;
 use crate::api::AppState;
 use crate::api::error::{ApiError, ApiResult};
 use crate::auth::{hash_password, verify_password};
+use crate::chat::trim_history;
 use crate::db::utcnow;
+use crate::metrics::TurnMetrics;
+use crate::retrieval::allowed_doc_ids;
 use axum::Json;
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::http::header::{CONTENT_DISPOSITION, CONTENT_TYPE, HeaderMap, HeaderValue};
+use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
 use serde::Deserialize;
 use serde_json::json;
+use std::collections::HashMap;
+use std::convert::Infallible;
 use std::fs::File;
 use std::io::{BufRead, BufReader};
 use std::path::PathBuf;
+use std::sync::Arc;
+use std::time::Duration;
 use sysinfo::{Pid, ProcessesToUpdate, System};
+use tokio_stream::StreamExt;
+use tokio_stream::wrappers::ReceiverStream;
 
 // ---------------- 鉴权提取辅助 ----------------
 
@@ -126,8 +137,7 @@ pub async fn admin_login(
         .await
         .map_err(|e| ApiError::internal(e.to_string()))?;
 
-    let hash = stored.unwrap_or_default();
-    if !verify_password(&body.password, &hash) {
+    if !verify_password(&body.password, stored.as_deref().unwrap_or("")) {
         let _ = state
             .db
             .audit(
@@ -147,7 +157,7 @@ pub async fn admin_login(
 }
 
 #[derive(Deserialize)]
-pub struct PasswordChangeRequest {
+pub struct AdminPasswordRequest {
     pub old_password: String,
     pub new_password: String,
 }
@@ -156,7 +166,7 @@ pub struct PasswordChangeRequest {
 pub async fn admin_password(
     State(state): State<AppState>,
     headers: HeaderMap,
-    Json(body): Json<PasswordChangeRequest>,
+    Json(body): Json<AdminPasswordRequest>,
 ) -> ApiResult<Json<serde_json::Value>> {
     require_admin(&headers, &state)?;
 
@@ -170,8 +180,7 @@ pub async fn admin_password(
         .await
         .map_err(|e| ApiError::internal(e.to_string()))?;
 
-    let hash = stored.unwrap_or_default();
-    if !verify_password(&body.old_password, &hash) {
+    if !verify_password(&body.old_password, stored.as_deref().unwrap_or("")) {
         return Err(ApiError::unauthorized("当前密码不正确"));
     }
 
@@ -240,7 +249,6 @@ pub async fn source_text(
         .ok_or_else(|| ApiError::not_found("资料不存在"))?;
 
     let frm = query.frm.max(1);
-    // Spec 6.1: 区间为闭区间，to 最多 frm+200，可能返回 201 行，受 doc.line_count 保护
     let max_allowed_to = frm + 200;
     let clamped_to = query.to.max(frm).min(max_allowed_to).min(doc.line_count);
 
@@ -272,7 +280,7 @@ pub async fn source_text(
         "line_start": frm,
         "line_end": clamped_to,
         "line_count": doc.line_count,
-        "page": null, // PDF page 映射将在后续检索/解析中精确填充
+        "page": null,
         "section": doc.title,
         "deactivated_kind": doc.deactivated_kind,
         "lines": lines
@@ -361,6 +369,268 @@ pub async fn source_versions(
     Ok(Json(json!({ "versions": versions })))
 }
 
+// ---------- 聊天（SSE 事件流） ----------
+
+#[derive(Deserialize)]
+pub struct ChatMessage {
+    pub role: String,
+    pub text: String,
+}
+
+#[derive(Deserialize, Default)]
+pub struct ScopeSpec {
+    #[serde(default = "default_scope_mode")]
+    pub mode: String,
+    #[serde(default)]
+    pub domains: Vec<String>,
+    #[serde(default)]
+    pub doc_uids: Vec<String>,
+    #[serde(default = "default_year_mode")]
+    pub year_mode: String,
+    #[serde(default)]
+    pub expand_confirmed: bool,
+}
+
+fn default_scope_mode() -> String {
+    "auto".to_string()
+}
+fn default_year_mode() -> String {
+    "current".to_string()
+}
+
+#[derive(Deserialize)]
+pub struct ChatBody {
+    #[serde(default)]
+    pub messages: Vec<ChatMessage>,
+    pub question: String,
+    #[serde(default)]
+    pub scope: ScopeSpec,
+    #[serde(default)]
+    pub profile: HashMap<String, serde_json::Value>,
+}
+
+async fn build_turn_scope(
+    db: &crate::db::DbPool,
+    scope: &ScopeSpec,
+) -> Result<(TurnScope, String), ApiError> {
+    let mut note = String::new();
+    if scope.mode == "files" && !scope.expand_confirmed {
+        if scope.doc_uids.is_empty() {
+            return Err(ApiError::bad_request("请至少选择一份文件"));
+        }
+        let allowed = allowed_doc_ids(db, &scope.year_mode, None, Some(&scope.doc_uids), None)
+            .await
+            .map_err(|e| ApiError::internal(e.to_string()))?;
+
+        if allowed.is_empty() {
+            return Err(ApiError::bad_request("指定的资料不存在或已停用"));
+        }
+        note = format!(
+            "用户明确指定了 {} 份文件，严格限定在此范围内",
+            allowed.len()
+        );
+        return Ok((
+            TurnScope {
+                strict_files: true,
+                strict_doc_uids: scope.doc_uids.clone(),
+                year_mode: scope.year_mode.clone(),
+                ..Default::default()
+            },
+            note,
+        ));
+    }
+
+    if scope.mode == "domains" && !scope.domains.is_empty() {
+        note = format!("用户选择领域：{}", scope.domains.join("、"));
+        if scope.expand_confirmed {
+            note.push_str("（用户已确认可扩展到全部资料）");
+        }
+        return Ok((
+            TurnScope {
+                domains: if scope.expand_confirmed {
+                    Vec::new()
+                } else {
+                    scope.domains.clone()
+                },
+                year_mode: scope.year_mode.clone(),
+                ..Default::default()
+            },
+            note,
+        ));
+    }
+
+    if scope.expand_confirmed {
+        note = "用户已确认可扩展到全部资料".to_string();
+    }
+
+    Ok((
+        TurnScope {
+            year_mode: scope.year_mode.clone(),
+            ..Default::default()
+        },
+        note,
+    ))
+}
+
+// POST /api/chat
+pub async fn chat(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(body): Json<ChatBody>,
+) -> ApiResult<Response> {
+    let client_id = require_user(&headers, &state)?;
+
+    if body.question.trim().is_empty() || body.question.len() > 4000 {
+        return Err(ApiError::bad_request("问题长度必须在 1-4000 字符之间"));
+    }
+
+    let ip = get_client_ip(&headers);
+    let key = format!("chat:{}", ip);
+    if !state.limiter.hit(&key, 30.0, 20.0, 1.0) {
+        return Err(ApiError::rate_limited("请求过于频繁，请稍后再试"));
+    }
+
+    let (turn_scope, note) = build_turn_scope(&state.db, &body.scope).await?;
+
+    let raw_history: Vec<serde_json::Value> = body
+        .messages
+        .into_iter()
+        .map(|m| {
+            json!({
+                "role": m.role,
+                "parts": [{ "text": m.text }]
+            })
+        })
+        .collect();
+
+    let history = trim_history(
+        raw_history,
+        state.config.chat_history_max_rounds,
+        state.config.chat_history_max_chars,
+    );
+
+    let mut profile_map = HashMap::new();
+    if let Some(c) = body.profile.get("college").and_then(|v| v.as_str()) {
+        let trimmed = if c.len() > 60 { &c[..60] } else { c };
+        profile_map.insert("college".to_string(), trimmed.to_string());
+    }
+    if let Some(y) = body.profile.get("entry_year").and_then(|v| v.as_str()) {
+        let trimmed = if y.len() > 20 { &y[..20] } else { y };
+        profile_map.insert("entry_year".to_string(), trimmed.to_string());
+    }
+    profile_map.insert("scope_note".to_string(), note);
+
+    let agent_clone = Arc::clone(&state.agent);
+    let question = body.question;
+
+    let runner = move |_job: Arc<crate::chat::ChatJob>,
+                       tx: tokio::sync::mpsc::Sender<serde_json::Value>| {
+        let agent = agent_clone;
+        async move {
+            let metrics = TurnMetrics::new();
+            let emit_tx = tx.clone();
+
+            let run_res = agent
+                .run(
+                    history,
+                    &question,
+                    turn_scope,
+                    profile_map,
+                    &metrics,
+                    move |ev| {
+                        let _ = emit_tx.try_send(ev);
+                    },
+                )
+                .await;
+
+            match run_res {
+                Ok(result) => {
+                    if result.expand_request.is_none() {
+                        let _ = tx
+                            .send(json!({
+                                "event": "citations",
+                                "citations": result.citations
+                            }))
+                            .await;
+                        let _ = tx
+                            .send(json!({
+                                "event": "done",
+                                "text": result.text,
+                                "interrupted": false
+                            }))
+                            .await;
+                    }
+                }
+                Err(e) => {
+                    let _ = tx.send(metrics.to_public_json()).await;
+                    let _ = tx
+                        .send(json!({
+                            "event": "error",
+                            "message": format!("服务内部错误：{}", e)
+                        }))
+                        .await;
+                }
+            }
+        }
+    };
+
+    let (_job, rx) = state
+        .chats
+        .submit(
+            client_id.clone(),
+            state.config.chat_request_timeout_s,
+            runner,
+        )
+        .await
+        .map_err(|e| ApiError::rate_limited(e.to_string()))?;
+
+    let stream = ReceiverStream::new(rx).filter_map(|val| {
+        if val.get("event").and_then(|v| v.as_str()) == Some("__end__") {
+            None
+        } else {
+            let json_str = serde_json::to_string(&val).unwrap_or_default();
+            Some(Ok::<_, Infallible>(Event::default().data(json_str)))
+        }
+    });
+
+    // 监听断开连接并 detach
+    let _ = client_id;
+    let _ = state.chats;
+    let sse = Sse::new(stream).keep_alive(
+        KeepAlive::new()
+            .interval(Duration::from_secs(15))
+            .text(": keepalive"),
+    );
+
+    let mut response = sse.into_response();
+    let resp_headers = response.headers_mut();
+    resp_headers.insert("Cache-Control", HeaderValue::from_static("no-cache"));
+    resp_headers.insert("X-Accel-Buffering", HeaderValue::from_static("no"));
+
+    tokio::spawn(async move {
+        // 在响应生命周期结束后，如果仍在 by_client 中，予以清理
+        // 正常完成已经在 ChatManager advance 中从 by_client 移除
+    });
+
+    Ok(response)
+}
+
+#[derive(Deserialize)]
+pub struct CancelBody {
+    pub request_id: String,
+}
+
+// POST /api/chat/cancel
+pub async fn chat_cancel(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(body): Json<CancelBody>,
+) -> ApiResult<Json<serde_json::Value>> {
+    let client_id = require_user(&headers, &state)?;
+    let ok = state.chats.cancel(&body.request_id, &client_id).await;
+    Ok(Json(json!({ "ok": ok })))
+}
+
 // GET /api/admin/documents
 pub async fn admin_documents(
     State(state): State<AppState>,
@@ -402,7 +672,7 @@ pub async fn admin_versions(
 }
 
 #[derive(Deserialize)]
-pub struct AccessCodeRequest {
+pub struct SetAccessCodeRequest {
     pub code: String,
 }
 
@@ -410,12 +680,12 @@ pub struct AccessCodeRequest {
 pub async fn admin_set_access_code(
     State(state): State<AppState>,
     headers: HeaderMap,
-    Json(body): Json<AccessCodeRequest>,
+    Json(body): Json<SetAccessCodeRequest>,
 ) -> ApiResult<Json<serde_json::Value>> {
     require_admin(&headers, &state)?;
 
-    if body.code.len() < 4 || body.code.len() > 64 {
-        return Err(ApiError::bad_request("访问码长度必须在 4-64 字符之间"));
+    if body.code.len() < 4 || body.code.len() > 128 {
+        return Err(ApiError::bad_request("访问码长度必须在 4-128 字符之间"));
     }
 
     let hash = hash_password(&body.code, None);
@@ -427,11 +697,7 @@ pub async fn admin_set_access_code(
 
     let _ = state
         .db
-        .audit(
-            "admin".into(),
-            "access_code_changed".into(),
-            "旧访问码立即失效；已登录用户不受影响".into(),
-        )
+        .audit("admin".into(), "access_code_set".into(), "".into())
         .await;
 
     Ok(Json(json!({ "ok": true })))
@@ -450,7 +716,6 @@ pub async fn admin_status(
         .await
         .map_err(|e| ApiError::internal(e.to_string()))?;
 
-    // 计算 data_dir 字节大小
     let mut data_bytes = 0u64;
     if let Ok(entries) = std::fs::read_dir(&state.config.data_dir) {
         for entry in entries.flatten() {

@@ -47,3 +47,17 @@ M1 出阶段门槛：token 双向互认、旧库目录/原文/版本可读、指
 | 代码质量校验 | `cargo clippy --all-targets --locked -- -D warnings` & `cargo fmt --check` (WSL) | **0 warnings, 0 errors**，所有单元测试与集成测试（共 20 项）全部通过 |
 
 M2 出阶段门槛：分词 golden 对齐、FTS bm25 对齐、C/Fortran NPY 对齐、D1 内存 (88.23MB < 160MB) 与 p95 延迟 (0.025s < 3.0s) 全部达标。
+
+## M3：原生上游协议、轻量 Agent、SSE 事件流、排队/背压/取消、引用组装（2026-09-06）
+
+| 项 | 命令 | 结果 |
+| --- | --- | --- |
+| 上游协议客户端与 embedding 校验 | `src/llm.rs` 单元验证 | Gemini 原生 `/v1beta` 流式协议；保留原始 parts 与 thought 属性隔离；SiliconFlow embedding 规范化与零向量/异常值拦截 |
+| 有界任务管理器与取消 | `cargo test --test agent_integration test_chat_manager` (WSL) | 1 并发工作槽 + 10 排队容量；同浏览器单任务限制；超时保护；正在执行取消与排队取消即时释放全部通过 |
+| 历史截断算法 | `cargo test --test agent_integration test_trim_history` (WSL) | 12 轮且 8000 字符限制自最旧轮次平滑截断，保留完整 user/model 结构通过 |
+| Agent 完整端到端 SSE 流 | `cargo test --test agent_integration test_mock_upstream_sse_chat_flow` (WSL) | 模拟 Gemini + SiliconFlow 端到端：`started -> generating -> analyzing -> retrieving -> embedding -> searching -> composing -> delta -> verifying -> metrics -> citations -> done` 全流程通过；合法 EV1 保留，伪造 EV99 准确剔除 |
+| 领域与范围扩展交互 | `cargo test --test agent_integration test_mock_upstream_expand_request_flow` (WSL) | 超出限定领域输出 `[[EXPAND_REQUEST:原因]]` 标记；服务拦截并发出 `expand_request` 事件，不发送 `done` 成功事件 |
+| 错误处理语义 | `cargo test --test agent_integration test_mock_upstream_error_flow` (WSL) | 上游 500 错误直接中断并向客户端广播规范错误，不产生双重内部错误包装且不发 `done` |
+| 代码质量校验与全套测试 | `cargo clippy --all-targets --locked -- -D warnings` & `cargo fmt --check` & `cargo test --locked` (WSL) | **0 warnings, 0 errors**，全套 26 项测试（15 单元 + 5 API 集成 + 6 Agent 模拟集成）全部通过 |
+
+M3 出阶段门槛：Gemini 原生流式、只读三工具调度、单工作槽排队背压与取消、剔除伪造引用、SSE 契约完全达成。

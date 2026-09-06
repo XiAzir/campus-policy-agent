@@ -1,7 +1,10 @@
+use campus_policy_backend::agent::Agent;
 use campus_policy_backend::api::{AppState, create_router};
 use campus_policy_backend::auth::{RateLimiter, TokenService};
+use campus_policy_backend::chat::ChatManager;
 use campus_policy_backend::config::Config;
 use campus_policy_backend::db::DbPool;
+use campus_policy_backend::vectors::VectorIndex;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::net::TcpListener;
@@ -48,12 +51,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .map_err(std::io::Error::other)?;
 
     let limiter = Arc::new(RateLimiter::new(10_000));
+    let vectors = Arc::new(VectorIndex::new(config.data_dir.join("vectors")));
+    let agent = Arc::new(Agent::new(db.clone(), Arc::clone(&vectors), config.clone()));
+    let chats = Arc::new(ChatManager::new(
+        config.chat_concurrency,
+        config.chat_queue_max,
+    ));
 
     let state = AppState {
         config: config.clone(),
         db,
         tokens,
         limiter,
+        vectors,
+        agent,
+        chats,
     };
 
     let app = create_router(state);

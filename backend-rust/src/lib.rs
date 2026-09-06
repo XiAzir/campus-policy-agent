@@ -1,8 +1,12 @@
+pub mod agent;
 pub mod api;
 pub mod audience;
 pub mod auth;
+pub mod chat;
 pub mod config;
 pub mod db;
+pub mod llm;
+pub mod metrics;
 pub mod retrieval;
 pub mod tokenizer;
 pub mod vectors;
