@@ -4,35 +4,9 @@ import { api, prefsFromStorage, prefsToStorage, streamChat, cancelChat } from ".
 import { idb, newChat, userMessage, modelMessage } from "../idb";
 import type { UserPrefs } from "../types";
 import CitationPopup from "./CitationPopup";
-
-const EV_RE = /\[\[(EV\d+)\]\]/g;
-
-function MessageBody({ text, citations, onOpen }: { text: string; citations: Citation[]; onOpen: (c: Citation) => void }) {
-  const parts: (string | { ev: Citation })[] = [];
-  let last = 0;
-  for (const m of text.matchAll(EV_RE)) {
-    const before = text.slice(last, m.index);
-    if (before) parts.push(before);
-    const c = citations.find((x) => x.evidence_id === m[1]);
-    if (c) parts.push({ ev: c });
-    else parts.push(m[0]);
-    last = (m.index ?? 0) + m[0].length;
-  }
-  if (last < text.length) parts.push(text.slice(last));
-  return (
-    <div className="msg-body">
-      {parts.map((p, i) =>
-        typeof p === "string" ? (
-          <span key={i}>{p}</span>
-        ) : (
-          <button key={i} className="cite-chip" onClick={() => onOpen(p.ev)}>
-            原文 {p.ev.evidence_id.replace("EV", "")}
-          </button>
-        )
-      )}
-    </div>
-  );
-}
+import MessageBody from "./MessageBody";
+import CitationCards from "./CitationCards";
+import WorkSteps from "./WorkSteps";
 
 export default function ChatPage() {
   const [chats, setChats] = useState<ChatRecord[]>([]);
@@ -43,7 +17,6 @@ export default function ChatPage() {
   const [busy, setBusy] = useState(false);
   const [status, setStatus] = useState("");
   const [activeCitation, setActiveCitation] = useState<Citation | null>(null);
-  const [streamText, setStreamText] = useState("");
   const [showSettings, setShowSettings] = useState(false);
   const abortRef = useRef<AbortController | null>(null);
   const busyRef = useRef(false);
@@ -73,7 +46,7 @@ export default function ChatPage() {
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [current?.messages.length, streamText, status]);
+  }, [current?.messages.length, current?.messages.at(-1)?.text, status]);
 
   const domains = useMemo(() => {
     const s = new Set<string>();
@@ -122,7 +95,7 @@ export default function ChatPage() {
       await saveChat(chat);
       setCurrent({ ...chat });
       for (;;) {
-        const reply = { ...modelMessage("", [], true), pending: true };
+        const reply: StoredMessage = { ...modelMessage("", [], true), pending: true, steps: [] };
         chat.messages.push(reply);
         const persist = async () => {
           chat.updatedAt = Date.now();
@@ -146,6 +119,11 @@ export default function ChatPage() {
           await streamChat({ question, messages: history, scope,
             profile: { college: selectedPrefs.college, entry_year: selectedPrefs.entryYear } }, async (ev: ChatEvent) => {
             switch (ev.event) {
+              case "stage":
+                reply.steps!.push({ stage: ev.stage });
+                setStatus("");
+                await persist();
+                break;
               case "queued":
                 reqIdRef.current = ev.request_id;
                 setStatus(`排队中（第 ${ev.position} 位）…`);
@@ -154,8 +132,8 @@ export default function ChatPage() {
                 reqIdRef.current = ev.request_id;
                 setStatus("");
                 break;
-              case "retrieving": setStatus("正在检索资料…"); break;
-              case "generating": setStatus(""); break;
+              case "retrieving": if (!reply.steps?.length) setStatus("正在检索资料…"); break;
+              case "generating": if (!reply.steps?.length) setStatus("正在处理问题…"); break;
               case "delta":
                 reply.text += ev.text;
                 // Persist before displaying: a closed page can recover every shown delta.
@@ -166,7 +144,7 @@ export default function ChatPage() {
                 terminal = true;
                 reply.text = ev.text.trim();
                 reply.pending = false;
-                reply.interrupted = false;
+                reply.interrupted = ev.interrupted;
                 await persist();
                 setStatus("");
                 break;
@@ -207,7 +185,6 @@ export default function ChatPage() {
     } finally {
       busyRef.current = false;
       setBusy(false);
-      setStreamText("");
       abortRef.current = null;
     }
   };
@@ -402,16 +379,9 @@ export default function ChatPage() {
             <div key={i} className={"msg " + m.role}>
               {m.role === "model" ? (
                 <>
+                  <WorkSteps steps={m.steps || []} pending={m.pending} interrupted={m.interrupted} />
                   <MessageBody text={m.text} citations={m.citations} onOpen={setActiveCitation} />
-                  {m.citations.length > 0 && (
-                    <div className="cite-list">
-                      {m.citations.map((c) => (
-                        <span key={c.evidence_id} className="cite-ref" onClick={() => setActiveCitation(c)}>
-                          {c.title} · 行 {c.line_start}–{c.line_end}
-                        </span>
-                      ))}
-                    </div>
-                  )}
+                  <CitationCards citations={m.citations} onOpen={setActiveCitation} />
                   {m.interrupted && !m.pending && <div className="interrupted">已中断（回答不完整，可重新提问）</div>}
                 </>
               ) : (
@@ -419,11 +389,6 @@ export default function ChatPage() {
               )}
             </div>
           ))}
-          {busy && streamText && (
-            <div className="msg model">
-              <MessageBody text={streamText} citations={[]} onOpen={setActiveCitation} />
-            </div>
-          )}
           {status && <div className="status">{status}</div>}
           <div ref={bottomRef} />
         </div>
