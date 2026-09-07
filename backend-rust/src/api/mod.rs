@@ -8,7 +8,7 @@ use crate::config::Config;
 use crate::db::DbPool;
 use crate::vectors::VectorIndex;
 use axum::Router;
-use axum::routing::{get, post, put};
+use axum::routing::{get, patch, post, put};
 use std::sync::Arc;
 use tower_http::services::ServeDir;
 
@@ -35,10 +35,38 @@ pub fn create_router(state: AppState) -> Router {
         .route("/source/{doc_uid}/versions", get(handlers::source_versions))
         .route("/chat", post(handlers::chat))
         .route("/chat/cancel", post(handlers::chat_cancel))
+        .route(
+            "/admin/packages",
+            get(handlers::admin_packages_list).post(handlers::admin_package_upload),
+        )
+        .route(
+            "/admin/packages/{package_id}",
+            get(handlers::admin_package_preview).delete(handlers::admin_package_discard),
+        )
+        .route(
+            "/admin/packages/{package_id}/documents/{doc_hash}",
+            patch(handlers::admin_package_patch_meta),
+        )
+        .route(
+            "/admin/packages/{package_id}/publish",
+            post(handlers::admin_package_publish),
+        )
         .route("/admin/documents", get(handlers::admin_documents))
         .route(
             "/admin/documents/{doc_uid}/versions",
             get(handlers::admin_versions),
+        )
+        .route(
+            "/admin/documents/{doc_uid}/deactivate",
+            post(handlers::admin_document_deactivate),
+        )
+        .route(
+            "/admin/documents/{doc_uid}/enable",
+            post(handlers::admin_document_enable),
+        )
+        .route(
+            "/admin/documents/{doc_uid}/unlink",
+            post(handlers::admin_document_unlink),
         )
         .route("/admin/access-code", put(handlers::admin_set_access_code))
         .route("/admin/status", get(handlers::admin_status))

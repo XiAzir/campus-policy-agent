@@ -61,3 +61,18 @@ M2 出阶段门槛：分词 golden 对齐、FTS bm25 对齐、C/Fortran NPY 对�
 | 代码质量校验与全套测试 | `cargo clippy --all-targets --locked -- -D warnings` & `cargo fmt --check` & `cargo test --locked` (WSL) | **0 warnings, 0 errors**，全套 26 项测试（15 单元 + 5 API 集成 + 6 Agent 模拟集成）全部通过 |
 
 M3 出阶段门槛：Gemini 原生流式、只读三工具调度、单工作槽排队背压与取消、剔除伪造引用、SSE 契约完全达成。
+
+## M4：流式包校验、草稿修正、事务发布、版本与并发读（2026-09-07）
+
+| 项 | 命令 | 结果 |
+| --- | --- | --- |
+| ZIP 安全防护与解压炸弹拦截 | `cargo test --test ingest_integration test_ingest_path_traversal` (WSL) | 严格拦截 `../` 路径穿越、非法根条目、非法盘符、符号链接、条目数上限（10,002）与压缩比异常（>200） |
+| 包结构与逐字一致性校验 | `cargo test --test ingest_integration test_ingest_duplicate` (WSL) | 校验原文件 SHA-256、文本 SHA-256、行数、chunk 逐字符一致性、章节/领域闭包约束与连续 vector_index；包哈希重复拒绝 |
+| 草稿预览与元数据覆盖 | `cargo test --test ingest_integration test_ingest_preview` (WSL) | `title/department/effective_date/audience/audience_scope/notes/replaces` 7 项白名单可修正；拦截非法字段（如修改 chunks 报 400） |
+| 事务性原子发布与替代链 | `cargo test --test ingest_integration test_ingest_publish` (WSL) | `draft -> published` 原子事务切换；旧版自动进入 `superseded`（已手动停用则保持 `manual`）；生成关联表 `sections`, `doc_tags`, `chunks`, `chunks_fts`, `vector_rows` 与审计日志 |
+| 停用、启用与解除替代 | `cargo test --test ingest_integration test_ingest_publish_and_versions_lifecycle` (WSL) | `deactivate_document` 标记 manual；`enable_document` 启用时严格校验若已被替代须先调用 `unlink_replacement`，防止双现行版本并存 |
+| 丢弃草稿包与文件清理 | `cargo test --test ingest_integration test_ingest_discard_draft` (WSL) | 丢弃草稿后清理 `pkg-draft-*.npy` 与暂存 zip，再次丢弃返回 400 |
+| HTTP 管理端端点全链路 | `cargo test --test api_integration test_api_admin_packages_http_endpoints` (WSL) | `GET /admin/packages`、`POST /admin/packages` (multipart 上传与 413 保护)、`GET /admin/packages/{id}`、`PATCH /admin/packages/{id}/documents/{hash}`、`DELETE /admin/packages/{id}`、`POST /admin/documents/{uid}/deactivate`、`POST /admin/documents/{uid}/enable`、`POST /admin/documents/{uid}/unlink` 完整通过 |
+| 代码质量校验与全套测试 | `cargo clippy --all-targets --locked -- -D warnings` & `cargo fmt --check` & `cargo test --locked` (WSL) | **0 warnings, 0 errors**，全套 33 项测试（15 单元 + 6 Agent 集成 + 6 API 集成 + 6 Ingest 集成）全部通过 |
+
+M4 出阶段门槛：恶意包与路径穿越防御通过、元数据修正限制生效、事务发布与替代关系完整、管理端 HTTP 接口契约完全达成。

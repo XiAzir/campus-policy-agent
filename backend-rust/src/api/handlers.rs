@@ -770,6 +770,241 @@ pub async fn admin_metrics(
     })))
 }
 
+// ---------- 管理端：资料包与文件管理 ----------
+
+// GET /api/admin/packages
+pub async fn admin_packages_list(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> ApiResult<Json<serde_json::Value>> {
+    require_admin(&headers, &state)?;
+
+    let pkgs = state
+        .db
+        .read(|conn| {
+            let mut stmt = conn.prepare(
+                "SELECT id, sha256, original_filename, size, imported_at, status, doc_count, chunk_count, embed_model, embed_dim \
+                 FROM packages ORDER BY id DESC",
+            )?;
+            let mut rows = stmt.query([])?;
+            let mut list = Vec::new();
+            while let Some(r) = rows.next()? {
+                list.push(json!({
+                    "id": r.get::<_, i64>(0)?,
+                    "sha256": r.get::<_, String>(1)?,
+                    "original_filename": r.get::<_, String>(2)?,
+                    "size": r.get::<_, i64>(3)?,
+                    "imported_at": r.get::<_, String>(4)?,
+                    "status": r.get::<_, String>(5)?,
+                    "doc_count": r.get::<_, i64>(6)?,
+                    "chunk_count": r.get::<_, i64>(7)?,
+                    "embed_model": r.get::<_, String>(8)?,
+                    "embed_dim": r.get::<_, i64>(9)?
+                }));
+            }
+            Ok(list)
+        })
+        .await
+        .map_err(|e| ApiError::internal(e.to_string()))?;
+
+    Ok(Json(json!({ "packages": pkgs })))
+}
+
+// GET /api/admin/packages/{package_id}
+pub async fn admin_package_preview(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(package_id): Path<i64>,
+) -> ApiResult<Json<serde_json::Value>> {
+    require_admin(&headers, &state)?;
+
+    let preview = crate::ingest::preview_package(&state.db, &state.config, package_id)
+        .await
+        .map_err(|e| ApiError::bad_request(e.to_string()))?;
+
+    let Some(val) = preview else {
+        return Err(ApiError::not_found("资料包不存在"));
+    };
+
+    Ok(Json(val))
+}
+
+// POST /api/admin/packages
+pub async fn admin_package_upload(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    mut multipart: axum::extract::Multipart,
+) -> ApiResult<Json<serde_json::Value>> {
+    require_admin(&headers, &state)?;
+
+    let _ip = get_client_ip(&headers);
+    let key = "pkgupload".to_string();
+    if !state.limiter.hit(&key, 6.0, 5.0, 1.0) {
+        return Err(ApiError::rate_limited("请求过于频繁，请稍后再试"));
+    }
+
+    let mut original_filename = "package.zip".to_string();
+    let parent = state
+        .config
+        .data_dir
+        .parent()
+        .unwrap_or(&state.config.data_dir);
+    let tmp_zip = parent.join(format!(
+        "cpb-upload-{}.zip",
+        hex::encode(rand::random::<[u8; 8]>())
+    ));
+
+    let mut total_bytes = 0u64;
+    let max_bytes = (state.config.max_package_mb as u64) * 1024 * 1024;
+    let mut file_saved = false;
+
+    while let Ok(Some(mut field)) = multipart.next_field().await {
+        let name = field.name().unwrap_or("").to_string();
+        if name == "file" {
+            if let Some(fname) = field.file_name() {
+                original_filename = fname.to_string();
+            }
+
+            let mut out_file =
+                File::create(&tmp_zip).map_err(|e| ApiError::internal(e.to_string()))?;
+            while let Ok(Some(chunk)) = field.chunk().await {
+                total_bytes += chunk.len() as u64;
+                if total_bytes > max_bytes {
+                    let _ = std::fs::remove_file(&tmp_zip);
+                    return Err(ApiError::new(
+                        StatusCode::PAYLOAD_TOO_LARGE,
+                        format!(
+                            "资料包超过单包上限 {}MB，请分包导入",
+                            state.config.max_package_mb
+                        ),
+                    ));
+                }
+                std::io::Write::write_all(&mut out_file, &chunk)
+                    .map_err(|e| ApiError::internal(e.to_string()))?;
+            }
+            file_saved = true;
+            break;
+        }
+    }
+
+    if !file_saved {
+        let _ = std::fs::remove_file(&tmp_zip);
+        return Err(ApiError::bad_request("缺少上传文件"));
+    }
+
+    let import_res =
+        crate::ingest::import_package(&state.db, &state.config, &tmp_zip, &original_filename).await;
+    let _ = std::fs::remove_file(&tmp_zip);
+
+    match import_res {
+        Ok(id) => Ok(Json(json!({ "id": id }))),
+        Err(e) => Err(ApiError::bad_request(e.to_string())),
+    }
+}
+
+#[derive(Deserialize)]
+pub struct PatchMetaRequest {
+    pub fields: HashMap<String, serde_json::Value>,
+}
+
+// PATCH /api/admin/packages/{package_id}/documents/{doc_hash}
+pub async fn admin_package_patch_meta(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path((package_id, doc_hash)): Path<(i64, String)>,
+    Json(body): Json<PatchMetaRequest>,
+) -> ApiResult<Json<serde_json::Value>> {
+    require_admin(&headers, &state)?;
+
+    crate::ingest::apply_override(&state.db, &state.config, package_id, &doc_hash, body.fields)
+        .await
+        .map_err(|e| ApiError::bad_request(e.to_string()))?;
+
+    Ok(Json(json!({ "ok": true })))
+}
+
+#[derive(Deserialize, Default)]
+pub struct PublishPackageRequest {
+    #[serde(default)]
+    pub replacements: HashMap<String, Option<String>>,
+}
+
+// POST /api/admin/packages/{package_id}/publish
+pub async fn admin_package_publish(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(package_id): Path<i64>,
+    Json(body): Json<PublishPackageRequest>,
+) -> ApiResult<Json<serde_json::Value>> {
+    require_admin(&headers, &state)?;
+
+    crate::ingest::publish_package(&state.db, &state.config, package_id, body.replacements)
+        .await
+        .map_err(|e| ApiError::bad_request(e.to_string()))?;
+
+    Ok(Json(json!({ "ok": true })))
+}
+
+// DELETE /api/admin/packages/{package_id}
+pub async fn admin_package_discard(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(package_id): Path<i64>,
+) -> ApiResult<Json<serde_json::Value>> {
+    require_admin(&headers, &state)?;
+
+    crate::ingest::discard_package(&state.db, &state.config, package_id)
+        .await
+        .map_err(|e| ApiError::bad_request(e.to_string()))?;
+
+    Ok(Json(json!({ "ok": true })))
+}
+
+// POST /api/admin/documents/{doc_uid}/deactivate
+pub async fn admin_document_deactivate(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(doc_uid): Path<String>,
+) -> ApiResult<Json<serde_json::Value>> {
+    require_admin(&headers, &state)?;
+
+    crate::ingest::deactivate_document(&state.db, &doc_uid)
+        .await
+        .map_err(|e| ApiError::bad_request(e.to_string()))?;
+
+    Ok(Json(json!({ "ok": true })))
+}
+
+// POST /api/admin/documents/{doc_uid}/enable
+pub async fn admin_document_enable(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(doc_uid): Path<String>,
+) -> ApiResult<Json<serde_json::Value>> {
+    require_admin(&headers, &state)?;
+
+    crate::ingest::enable_document(&state.db, &doc_uid)
+        .await
+        .map_err(|e| ApiError::bad_request(e.to_string()))?;
+
+    Ok(Json(json!({ "ok": true })))
+}
+
+// POST /api/admin/documents/{doc_uid}/unlink
+pub async fn admin_document_unlink(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(doc_uid): Path<String>,
+) -> ApiResult<Json<serde_json::Value>> {
+    require_admin(&headers, &state)?;
+
+    crate::ingest::unlink_replacement(&state.db, &doc_uid)
+        .await
+        .map_err(|e| ApiError::bad_request(e.to_string()))?;
+
+    Ok(Json(json!({ "ok": true })))
+}
+
 pub async fn fallback_handler() -> Json<serde_json::Value> {
     Json(json!({
         "service": "campus-policy-agent-rust",

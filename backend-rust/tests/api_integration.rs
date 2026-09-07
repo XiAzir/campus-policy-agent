@@ -19,6 +19,9 @@ async fn spawn_test_server() -> (String, String, String) {
     let pool = DbPool::new(legacy_db, 2, 64).expect("初始化测试 DbPool 失败");
     let mut config = Config::from_env(None);
     config.data_dir = Path::new("tests/fixtures/legacy_data").to_path_buf();
+    config.siliconflow_model = "test-embed".to_string();
+    config.embed_dims = 1024;
+    config.preprocessing_version = "v1".to_string();
 
     let secret = pool
         .setting_get("token_secret".into())
@@ -205,4 +208,127 @@ async fn test_api_admin_metrics() {
     let body: Value = res.json().await.unwrap();
     assert!(body["rss_bytes"].as_u64().unwrap() > 0);
     assert!(body["at"].is_string());
+}
+
+#[tokio::test]
+async fn test_api_admin_packages_http_endpoints() {
+    let (base_url, user_token, admin_token) = spawn_test_server().await;
+    let client = reqwest::Client::new();
+
+    // 1. 获取包列表应返回现有 1 个已发布包
+    let res = client
+        .get(format!("{}/api/admin/packages", base_url))
+        .header(AUTHORIZATION, format!("Bearer {}", admin_token))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 200);
+    let body: Value = res.json().await.unwrap();
+    let pkgs = body["packages"].as_array().unwrap();
+    assert_eq!(pkgs.len(), 1);
+    assert_eq!(pkgs[0]["id"], 1);
+
+    // 2. 预览不存在的包返回 404
+    let res_404 = client
+        .get(format!("{}/api/admin/packages/9999", base_url))
+        .header(AUTHORIZATION, format!("Bearer {}", admin_token))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res_404.status(), 404);
+
+    // 3. 上传重复资料包 (small_v1.zip 已发布过) 应返回 400 拦截
+    let pkg_bytes = std::fs::read("tests/fixtures/packages/small_v1.zip").unwrap();
+    let part = reqwest::multipart::Part::bytes(pkg_bytes)
+        .file_name("small_v1.zip")
+        .mime_str("application/zip")
+        .unwrap();
+    let form = reqwest::multipart::Form::new().part("file", part);
+
+    let res_upload = client
+        .post(format!("{}/api/admin/packages", base_url))
+        .header(AUTHORIZATION, format!("Bearer {}", admin_token))
+        .multipart(form)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res_upload.status(), 400);
+    let upload_err: Value = res_upload.json().await.unwrap();
+    assert!(upload_err["detail"].as_str().unwrap().contains("重复导入"));
+
+    // 4. 停用与启用文档
+    let cat_res = client
+        .get(format!("{}/api/catalog", base_url))
+        .header(AUTHORIZATION, format!("Bearer {}", user_token))
+        .send()
+        .await
+        .unwrap();
+    let cat_body: Value = cat_res.json().await.unwrap();
+    let target_uid = cat_body["documents"][0]["doc_uid"].as_str().unwrap();
+
+    // 手动停用
+    let deact_res = client
+        .post(format!(
+            "{}/api/admin/documents/{}/deactivate",
+            base_url, target_uid
+        ))
+        .header(AUTHORIZATION, format!("Bearer {}", admin_token))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(deact_res.status(), 200);
+
+    // 停用后 catalog 现行文档减少 1 篇
+    let cat_res2 = client
+        .get(format!("{}/api/catalog", base_url))
+        .header(AUTHORIZATION, format!("Bearer {}", user_token))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        cat_res2.json::<Value>().await.unwrap()["documents"]
+            .as_array()
+            .unwrap()
+            .len(),
+        5
+    );
+
+    // 重新启用
+    let enable_res = client
+        .post(format!(
+            "{}/api/admin/documents/{}/enable",
+            base_url, target_uid
+        ))
+        .header(AUTHORIZATION, format!("Bearer {}", admin_token))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(enable_res.status(), 200);
+
+    // 启用后恢复为 6 篇
+    let cat_res3 = client
+        .get(format!("{}/api/catalog", base_url))
+        .header(AUTHORIZATION, format!("Bearer {}", user_token))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        cat_res3.json::<Value>().await.unwrap()["documents"]
+            .as_array()
+            .unwrap()
+            .len(),
+        6
+    );
+
+    // 5. 无替代关系时调用 unlink 返回 400
+    let unlink_res = client
+        .post(format!(
+            "{}/api/admin/documents/{}/unlink",
+            base_url, target_uid
+        ))
+        .header(AUTHORIZATION, format!("Bearer {}", admin_token))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(unlink_res.status(), 400);
 }

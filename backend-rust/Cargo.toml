@@ -29,7 +29,7 @@ rand = "0.8"
 rusqlite = { version = "0.33", features = ["bundled", "backup", "vtab"] }
 
 # HTTP 客户端（与上游 Gemini / 硅基流动通信）
-reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "stream"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "stream", "multipart"] }
 
 # 系统指标与时间
 chrono = { version = "0.4", features = ["serde"] }
