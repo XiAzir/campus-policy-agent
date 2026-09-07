@@ -137,8 +137,9 @@ impl Agent {
         scope: &mut TurnScope,
         evidence: &mut Vec<EvidenceItem>,
         metrics: Option<&TurnMetrics>,
-        mut emit: impl FnMut(Value),
+        emit_tx: tokio::sync::mpsc::Sender<Value>,
     ) -> Value {
+        let emit = |value| { let tx = emit_tx.clone(); async move { let _ = tx.send(value).await; } };
         let query = args
             .get("query")
             .and_then(|v| v.as_str())
@@ -182,7 +183,7 @@ impl Agent {
                     .unwrap_or("")
                     .trim();
                 let reason = if reason.len() > 160 {
-                    &reason[..160]
+                    &reason[..reason.char_indices().nth(160).map_or(reason.len(), |(i, _)| i)]
                 } else {
                     reason
                 };
@@ -260,19 +261,19 @@ impl Agent {
         }
 
         let start_time = Instant::now();
-        emit(json!({ "event": "stage", "stage": "embedding" }));
+        emit(json!({ "event": "stage", "stage": "embedding" })).await;
 
         let qvec_res = embed_query(&self.http_client, &self.config, query, None, metrics).await;
 
         let qvec = match qvec_res {
             Ok(v) => v,
             Err(e) => {
-                emit(json!({ "event": "stage", "stage": "embedding", "status": "failed" }));
+                emit(json!({ "event": "stage", "stage": "embedding", "status": "failed" })).await;
                 return json!({ "error": e.to_string() });
             }
         };
 
-        emit(json!({ "event": "stage", "stage": "searching" }));
+        emit(json!({ "event": "stage", "stage": "searching" })).await;
 
         // 重新过滤（防并发变更）
         let allowed_res = allowed_doc_ids(
@@ -324,7 +325,7 @@ impl Agent {
             });
 
             let excerpt = if h.text.len() > 4000 {
-                &h.text[..4000]
+                &h.text[..h.text.char_indices().nth(4000).map_or(h.text.len(), |(i, _)| i)]
             } else {
                 &h.text
             };
@@ -566,8 +567,9 @@ impl Agent {
         mut scope: TurnScope,
         profile: HashMap<String, String>,
         metrics: &TurnMetrics,
-        mut emit: impl FnMut(Value),
+        emit_tx: tokio::sync::mpsc::Sender<Value>,
     ) -> Result<AgentResult, LlmError> {
+        let emit = |value| { let tx = emit_tx.clone(); async move { let _ = tx.send(value).await; } };
         let mut evidence: Vec<EvidenceItem> = Vec::new();
         scope.profile = profile.clone();
 
@@ -611,12 +613,15 @@ impl Agent {
         let mut answer_text = String::new();
 
         while rounds <= self.config.chat_max_tool_rounds {
+            if serde_json::to_vec(&contents).map_or(true, |v| v.len() > 8 * 1024 * 1024) {
+                return Err(LlmError::InvalidResponse("对话上下文超过 8 MiB".into()));
+            }
             let force_final = rounds >= self.config.chat_max_tool_rounds;
-            emit(json!({ "event": "generating" }));
+            emit(json!({ "event": "generating" })).await;
             emit(json!({
                 "event": "stage",
                 "stage": if rounds == 0 { "analyzing" } else { "composing" }
-            }));
+            })).await;
 
             let mut current_parts = Vec::new();
             let mut round_text = String::new();
@@ -633,20 +638,21 @@ impl Agent {
                     },
                     0.2,
                     Some(metrics),
-                    |ev| match ev {
+                    |ev| { match ev {
                         StreamEvent::Text(txt) => {
                             round_text.push_str(&txt);
-                            emit(json!({ "event": "delta", "text": txt }));
+                            Box::pin(emit(json!({ "event": "delta", "text": txt })))
                         }
                         StreamEvent::Parts(parts) => {
                             current_parts = parts;
+                            Box::pin(async {})
                         }
-                    },
+                    } },
                 )
                 .await;
 
             if let Err(e) = stream_res {
-                emit(json!({ "event": "error", "message": e.to_string() }));
+                emit(json!({ "event": "error", "message": e.to_string() })).await;
                 return Err(e);
             }
 
@@ -671,6 +677,9 @@ impl Agent {
                 }
             }
 
+            if function_calls.len() > 8 {
+                return Err(LlmError::InvalidResponse("每轮工具调用超过 8 次".into()));
+            }
             if function_calls.is_empty() || force_final {
                 break;
             }
@@ -678,39 +687,40 @@ impl Agent {
             // 执行工具调用
             let mut fr_parts = Vec::new();
             for call in function_calls {
+                if evidence.len() >= 192 { return Err(LlmError::InvalidResponse("证据条数达到 192 上限".into())); }
                 let name = call.get("name").and_then(|v| v.as_str()).unwrap_or("");
                 let args = call.get("args").cloned().unwrap_or(json!({}));
                 let id = call.get("id").and_then(|v| v.as_str());
 
                 let result = match name {
                     "policy_search" => {
-                        emit(json!({ "event": "retrieving" }));
+                        emit(json!({ "event": "retrieving" })).await;
                         self.tool_policy_search(
                             &args,
                             &mut scope,
                             &mut evidence,
                             Some(metrics),
-                            &mut emit,
+                            emit_tx.clone(),
                         )
                         .await
                     }
                     "read_source" => {
-                        emit(json!({ "event": "stage", "stage": "reading" }));
+                        emit(json!({ "event": "stage", "stage": "reading" })).await;
                         let res = self.tool_read_source(&args, &scope, &mut evidence).await;
                         if res.get("error").is_some() {
                             emit(
                                 json!({ "event": "stage", "stage": "reading", "status": "failed" }),
-                            );
+                            ).await;
                         }
                         res
                     }
                     "get_versions" => {
-                        emit(json!({ "event": "stage", "stage": "versions" }));
+                        emit(json!({ "event": "stage", "stage": "versions" })).await;
                         let res = self.tool_get_versions(&args, &scope).await;
                         if res.get("error").is_some() {
                             emit(
                                 json!({ "event": "stage", "stage": "versions", "status": "failed" }),
-                            );
+                            ).await;
                         }
                         res
                     }
@@ -751,7 +761,7 @@ impl Agent {
             );
         }
 
-        emit(json!({ "event": "stage", "stage": "verifying" }));
+        emit(json!({ "event": "stage", "stage": "verifying" })).await;
 
         // 解析 EXPAND_REQUEST
         let expand_re = Regex::new(r"\[\[EXPAND_REQUEST:([\s\S]+?)\]\]").unwrap();
@@ -762,7 +772,7 @@ impl Agent {
                 .unwrap_or("")
                 .to_string();
             let reason = if reason.len() > 80 {
-                reason[..80].to_string()
+                reason.chars().take(80).collect()
             } else {
                 reason
             };
@@ -786,8 +796,8 @@ impl Agent {
             .to_string();
 
         if let Some(reason) = expand_request {
-            emit(json!({ "event": "expand_request", "reason": reason }));
-            emit(metrics.to_public_json());
+            emit(json!({ "event": "expand_request", "reason": reason })).await;
+            emit(metrics.to_public_json()).await;
             let final_txt = expand_re.replace_all(&cleaned_text, "").trim().to_string();
             return Ok(AgentResult {
                 text: final_txt,
@@ -796,7 +806,7 @@ impl Agent {
             });
         }
 
-        emit(metrics.to_public_json());
+        emit(metrics.to_public_json()).await;
         let citations = self.collect_citations(&evidence, &cleaned_text).await;
 
         Ok(AgentResult {

@@ -8,17 +8,18 @@ use campus_policy_backend::vectors::VectorIndex;
 use reqwest::header::AUTHORIZATION;
 use serde_json::Value;
 use std::net::SocketAddr;
-use std::path::Path;
+mod common;
 use std::sync::Arc;
 use tokio::net::TcpListener;
 
 async fn spawn_test_server() -> (String, String, String) {
-    let legacy_db = Path::new("tests/fixtures/legacy_data/campus.db");
+    let fixture = common::fixture_copy();
+    let legacy_db = fixture.path().join("campus.db");
     assert!(legacy_db.exists(), "必须存在 legacy_data/campus.db");
 
-    let pool = DbPool::new(legacy_db, 2, 64).expect("初始化测试 DbPool 失败");
+    let pool = DbPool::new(&legacy_db, 2, 64).expect("初始化测试 DbPool 失败");
     let mut config = Config::from_env(None);
-    config.data_dir = Path::new("tests/fixtures/legacy_data").to_path_buf();
+    config.data_dir = fixture.path().to_path_buf();
     config.siliconflow_model = "test-embed".to_string();
     config.embed_dims = 1024;
     config.preprocessing_version = "v1".to_string();
@@ -59,6 +60,7 @@ async fn spawn_test_server() -> (String, String, String) {
     let base_url = format!("http://{}", addr);
 
     tokio::spawn(async move {
+        let _fixture = fixture;
         axum::serve(listener, app).await.unwrap();
     });
 

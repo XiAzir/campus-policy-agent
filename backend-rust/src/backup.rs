@@ -1,7 +1,7 @@
 use crate::config::Config;
 use crate::db::{DbPool, utcnow};
 use crate::storage::{hash_file, require_space};
-use crate::vectors::parse_npy_header;
+use crate::vectors::validate_npy_file;
 use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
@@ -578,40 +578,11 @@ pub fn check_unpacked_snapshot(
             format!("pkg-draft-{}", &sha256[..16])
         };
         let npy_path = root.join("vectors").join(format!("{}.npy", vec_name));
-        let mut npy_file = File::open(&npy_path)?;
         let header =
-            parse_npy_header(&mut npy_file).map_err(|e| BackupError::Validation(e.to_string()))?;
+            validate_npy_file(&npy_path).map_err(|e| BackupError::Validation(e.to_string()))?;
 
         if header.shape != vec![chunk_count, embed_dim] {
             return Err(BackupError::Validation("备份向量形状不匹配".to_string()));
-        }
-
-        // 校验有限数值与归一化
-        let mut row_buf = vec![0u8; embed_dim * 4];
-        for r in 0..chunk_count {
-            npy_file.read_exact(&mut row_buf)?;
-            let mut sum_sq = 0.0f32;
-            for d in 0..embed_dim {
-                let val = f32::from_le_bytes([
-                    row_buf[d * 4],
-                    row_buf[d * 4 + 1],
-                    row_buf[d * 4 + 2],
-                    row_buf[d * 4 + 3],
-                ]);
-                if !val.is_finite() {
-                    return Err(BackupError::Validation(
-                        "备份向量不是有限的归一化向量".to_string(),
-                    ));
-                }
-                sum_sq += val * val;
-            }
-            let norm = sum_sq.sqrt();
-            if (norm - 1.0).abs() > 1e-3 {
-                return Err(BackupError::Validation(format!(
-                    "备份向量第 {} 行不是归一化向量（模长: {}）",
-                    r, norm
-                )));
-            }
         }
 
         // 如果是 published，检查 vector_rows 连续性

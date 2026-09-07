@@ -10,7 +10,7 @@ use futures_util::StreamExt;
 use reqwest::header::AUTHORIZATION;
 use serde_json::{Value, json};
 use std::net::SocketAddr;
-use std::path::Path;
+mod common;
 use std::sync::Arc;
 use tokio::net::TcpListener;
 
@@ -187,12 +187,13 @@ async fn test_mock_upstream_sse_chat_flow() {
     });
 
     // 搭建后端服务
-    let legacy_db = Path::new("tests/fixtures/legacy_data/campus.db");
+    let _fixture = common::fixture_copy();
+    let legacy_db = _fixture.path().join("campus.db");
     assert!(legacy_db.exists(), "必须存在 legacy_data/campus.db");
-    let pool = DbPool::new(legacy_db, 2, 64).expect("初始化测试 DbPool 失败");
+    let pool = DbPool::new(&legacy_db, 2, 64).expect("初始化测试 DbPool 失败");
 
     let mut config = Config::from_env(None);
-    config.data_dir = Path::new("tests/fixtures/legacy_data").to_path_buf();
+    config.data_dir = _fixture.path().to_path_buf();
     config.gemini_base_url = format!("http://{}", mock_addr);
     config.gemini_api_key = "test-key".to_string();
     config.siliconflow_base_url = format!("http://{}", mock_addr);
@@ -343,11 +344,12 @@ async fn test_mock_upstream_expand_request_flow() {
         axum::serve(mock_gemini_listener, mock_app).await.unwrap();
     });
 
-    let legacy_db = Path::new("tests/fixtures/legacy_data/campus.db");
-    let pool = DbPool::new(legacy_db, 2, 64).expect("初始化测试 DbPool 失败");
+    let _fixture = common::fixture_copy();
+    let legacy_db = _fixture.path().join("campus.db");
+    let pool = DbPool::new(&legacy_db, 2, 64).expect("初始化测试 DbPool 失败");
 
     let mut config = Config::from_env(None);
-    config.data_dir = Path::new("tests/fixtures/legacy_data").to_path_buf();
+    config.data_dir = _fixture.path().to_path_buf();
     config.gemini_base_url = format!("http://{}", mock_addr);
     config.gemini_api_key = "test-key".to_string();
 
@@ -466,11 +468,12 @@ async fn test_mock_upstream_error_flow() {
         axum::serve(mock_gemini_listener, mock_app).await.unwrap();
     });
 
-    let legacy_db = Path::new("tests/fixtures/legacy_data/campus.db");
-    let pool = DbPool::new(legacy_db, 2, 64).expect("初始化测试 DbPool 失败");
+    let _fixture = common::fixture_copy();
+    let legacy_db = _fixture.path().join("campus.db");
+    let pool = DbPool::new(&legacy_db, 2, 64).expect("初始化测试 DbPool 失败");
 
     let mut config = Config::from_env(None);
-    config.data_dir = Path::new("tests/fixtures/legacy_data").to_path_buf();
+    config.data_dir = _fixture.path().to_path_buf();
     config.gemini_base_url = format!("http://{}", mock_addr);
     config.gemini_api_key = "test-key".to_string();
 

@@ -55,13 +55,8 @@ fn require_admin(headers: &HeaderMap, state: &AppState) -> ApiResult<String> {
         .ok_or_else(|| ApiError::unauthorized("管理员登录已失效"))
 }
 
-fn get_client_ip(headers: &HeaderMap) -> String {
-    headers
-        .get("x-forwarded-for")
-        .and_then(|h| h.to_str().ok())
-        .and_then(|s| s.split(',').next())
-        .map(|s| s.trim().to_string())
-        .unwrap_or_else(|| "127.0.0.1".to_string())
+fn get_client_ip(peer: Option<axum::Extension<axum::extract::ConnectInfo<std::net::SocketAddr>>>) -> String {
+    peer.map(|p| p.0.0.ip().to_string()).unwrap_or_else(|| "unknown-peer".into())
 }
 
 // ---------------- 路由 Handlers ----------------
@@ -86,10 +81,10 @@ pub struct LoginRequest {
 // POST /api/auth/login
 pub async fn login(
     State(state): State<AppState>,
-    headers: HeaderMap,
+    peer: Option<axum::Extension<axum::extract::ConnectInfo<std::net::SocketAddr>>>,
     Json(body): Json<LoginRequest>,
 ) -> ApiResult<Json<serde_json::Value>> {
-    let ip = get_client_ip(&headers);
+    let ip = get_client_ip(peer);
     let key = format!("login:{}", ip);
     if !state.limiter.hit(&key, 2.0, 10.0, 1.0) {
         return Err(ApiError::rate_limited("请求过于频繁，请稍后再试"));
@@ -131,10 +126,10 @@ pub struct AdminLoginRequest {
 // POST /api/auth/admin/login
 pub async fn admin_login(
     State(state): State<AppState>,
-    headers: HeaderMap,
+    peer: Option<axum::Extension<axum::extract::ConnectInfo<std::net::SocketAddr>>>,
     Json(body): Json<AdminLoginRequest>,
 ) -> ApiResult<Json<serde_json::Value>> {
-    let ip = get_client_ip(&headers);
+    let ip = get_client_ip(peer);
     let key = format!("adminlogin:{}", ip);
     if !state.limiter.hit(&key, 2.0, 10.0, 1.0) {
         return Err(ApiError::rate_limited("请求过于频繁，请稍后再试"));
@@ -492,12 +487,11 @@ pub async fn chat(
 ) -> ApiResult<Response> {
     let client_id = require_user(&headers, &state)?;
 
-    if body.question.trim().is_empty() || body.question.len() > 4000 {
+    if body.question.trim().is_empty() || body.question.chars().count() > 4000 {
         return Err(ApiError::bad_request("问题长度必须在 1-4000 字符之间"));
     }
 
-    let ip = get_client_ip(&headers);
-    let key = format!("chat:{}", ip);
+    let key = format!("chat:{}", client_id);
     if !state.limiter.hit(&key, 30.0, 20.0, 1.0) {
         return Err(ApiError::rate_limited("请求过于频繁，请稍后再试"));
     }
@@ -523,12 +517,10 @@ pub async fn chat(
 
     let mut profile_map = HashMap::new();
     if let Some(c) = body.profile.get("college").and_then(|v| v.as_str()) {
-        let trimmed = if c.len() > 60 { &c[..60] } else { c };
-        profile_map.insert("college".to_string(), trimmed.to_string());
+        profile_map.insert("college".to_string(), c.chars().take(60).collect());
     }
     if let Some(y) = body.profile.get("entry_year").and_then(|v| v.as_str()) {
-        let trimmed = if y.len() > 20 { &y[..20] } else { y };
-        profile_map.insert("entry_year".to_string(), trimmed.to_string());
+        profile_map.insert("entry_year".to_string(), y.chars().take(20).collect());
     }
     profile_map.insert("scope_note".to_string(), note);
 
@@ -549,9 +541,7 @@ pub async fn chat(
                     turn_scope,
                     profile_map,
                     &metrics,
-                    move |ev| {
-                        let _ = emit_tx.try_send(ev);
-                    },
+                    emit_tx,
                 )
                 .await;
 
@@ -596,7 +586,7 @@ pub async fn chat(
         .await
         .map_err(|e| ApiError::rate_limited(e.to_string()))?;
 
-    let stream = ReceiverStream::new(rx).filter_map(|val| {
+    let stream = ReceiverStream::new(rx).take_while(|val| val.get("event").and_then(|v| v.as_str()) != Some("__end__")).filter_map(|val| {
         if val.get("event").and_then(|v| v.as_str()) == Some("__end__") {
             None
         } else {
@@ -605,9 +595,6 @@ pub async fn chat(
         }
     });
 
-    // 监听断开连接并 detach
-    let _ = client_id;
-    let _ = state.chats;
     let sse = Sse::new(stream).keep_alive(
         KeepAlive::new()
             .interval(Duration::from_secs(15))
@@ -618,11 +605,6 @@ pub async fn chat(
     let resp_headers = response.headers_mut();
     resp_headers.insert("Cache-Control", HeaderValue::from_static("no-cache"));
     resp_headers.insert("X-Accel-Buffering", HeaderValue::from_static("no"));
-
-    tokio::spawn(async move {
-        // 在响应生命周期结束后，如果仍在 by_client 中，予以清理
-        // 正常完成已经在 ChatManager advance 中从 by_client 移除
-    });
 
     Ok(response)
 }
@@ -871,7 +853,6 @@ pub async fn admin_package_upload(
 ) -> ApiResult<Json<serde_json::Value>> {
     require_admin(&headers, &state)?;
 
-    let _ip = get_client_ip(&headers);
     let key = "pkgupload".to_string();
     if !state.limiter.hit(&key, 6.0, 5.0, 1.0) {
         return Err(ApiError::rate_limited("请求过于频繁，请稍后再试"));
