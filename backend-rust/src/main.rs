@@ -9,9 +9,10 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::net::TcpListener;
 
-#[tokio::main]
+#[tokio::main(worker_threads = 1)]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let config = Config::from_env(None);
+    config.ensure_startup().map_err(std::io::Error::other)?;
     println!("启动 campus_policy_backend (Rust 版本)...");
     println!("数据目录: {:?}", config.data_dir);
     println!("监听地址: {}:{}", config.host, config.port);
@@ -30,7 +31,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         db.audit(
             "system".into(),
             "init_admin_password".into(),
-            format!("初始管理员密码已写入（{}）", config.initial_admin_password),
+            "初始管理员密码已设置".into(),
         )
         .await?;
     }

@@ -672,10 +672,10 @@ pub async fn install_backup(
     close_vector_handles();
 
     // 2. 写入恢复中标记文件
-    std::fs::write(
-        &marker,
-        b"Restore incomplete. Inspect rollback directories before restarting.\n",
-    )?;
+    use std::io::Write;
+    let mut marker_file = File::create(&marker)?;
+    marker_file.write_all(b"Restore incomplete. Inspect rollback directories before restarting.\n")?;
+    marker_file.sync_all()?;
 
     // 3. 关闭当前数据库连接
     db.close().await?;
@@ -699,21 +699,7 @@ pub async fn install_backup(
 
     if let Err(err) = install_result {
         // 尝试自动回滚
-        let _ = db.close().await;
-        if installed {
-            let _ = std::fs::rename(&current, &failed);
-        }
-        if moved_old && let Err(rb_err) = std::fs::rename(&previous, &current) {
-            return Err(BackupError::Rollback(format!(
-                "恢复回滚失败，旧数据目录已保留于 {:?}，请停止服务后人工恢复: {}",
-                previous, rb_err
-            )));
-        }
-        let _ = db.reopen(None).await;
-        let _ = std::fs::remove_file(&marker);
-        if failed.exists() {
-            let _ = std::fs::remove_dir_all(&failed);
-        }
+        rollback_install(db, &current, &previous, &failed, &marker, moved_old, installed).await?;
         return Err(err);
     }
 
@@ -721,16 +707,7 @@ pub async fn install_backup(
     let reopen_res = db.reopen(None).await;
     if let Err(e) = reopen_res {
         // 重开失败，尝试回退
-        let _ = db.close().await;
-        let _ = std::fs::rename(&current, &failed);
-        if moved_old && let Err(rb_err) = std::fs::rename(&previous, &current) {
-            return Err(BackupError::Rollback(format!(
-                "恢复重开失败且回滚旧目录亦失败: {}",
-                rb_err
-            )));
-        }
-        let _ = db.reopen(None).await;
-        let _ = std::fs::remove_file(&marker);
+        rollback_install(db, &current, &previous, &failed, &marker, moved_old, installed).await?;
         return Err(BackupError::Validation(format!(
             "恢复后重新打开数据库失败: {}",
             e
@@ -746,13 +723,7 @@ pub async fn install_backup(
         .await;
 
     if let Err(e) = verify_query {
-        let _ = db.close().await;
-        let _ = std::fs::rename(&current, &failed);
-        if moved_old {
-            let _ = std::fs::rename(&previous, &current);
-        }
-        let _ = db.reopen(None).await;
-        let _ = std::fs::remove_file(&marker);
+        rollback_install(db, &current, &previous, &failed, &marker, moved_old, installed).await?;
         return Err(BackupError::Validation(format!(
             "恢复后验证查询失败: {}",
             e
@@ -760,7 +731,7 @@ pub async fn install_backup(
     }
 
     // 4. 成功后清除标记与旧目录
-    let _ = std::fs::remove_file(&marker);
+    std::fs::remove_file(&marker)?;
     if previous.exists() {
         let _ = std::fs::remove_dir_all(&previous);
     }
@@ -769,4 +740,24 @@ pub async fn install_backup(
         documents: meta.counts.documents,
         chunks: meta.counts.chunks,
     })
+}
+
+async fn rollback_install(
+    db: &DbPool, current: &Path, previous: &Path, failed: &Path,
+    marker: &Path, moved_old: bool, installed: bool,
+) -> Result<(), BackupError> {
+    let result = async {
+        db.close().await?;
+        if installed { std::fs::rename(current, failed)?; }
+        if moved_old { std::fs::rename(previous, current)?; }
+        // Never create a new empty database while attempting recovery.
+        if !current.join("campus.db").is_file() {
+            return Err(BackupError::Validation("原数据库缺失".into()));
+        }
+        db.reopen(None).await?;
+        db.read(|conn| conn.query_row("SELECT COUNT(*) FROM documents", [], |r| r.get::<_, i64>(0))).await?;
+        std::fs::remove_file(marker)?;
+        Ok::<(), BackupError>(())
+    }.await;
+    result.map_err(|_| BackupError::Rollback("回滚未能完整验证，已保留恢复标记和目录".into()))
 }

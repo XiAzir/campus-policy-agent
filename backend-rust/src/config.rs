@@ -60,6 +60,16 @@ fn get_env_float(key: &str, default_val: f64) -> f64 {
 }
 
 impl Config {
+    pub fn ensure_startup(&self) -> Result<(), String> {
+        if env::var("DATA_DIR").unwrap_or_default().is_empty() {
+            return Err("必须显式设置 DATA_DIR".into());
+        }
+        if crate::backup::restore_marker_path(&self.data_dir).exists() {
+            return Err("存在未完成恢复标记，请先人工核查回滚目录；拒绝初始化数据库".into());
+        }
+        self.ensure_secrets()
+    }
+
     pub fn from_env(base_dir: Option<&Path>) -> Self {
         let fallback_data_dir = match base_dir {
             Some(p) => p.join("backend").join("data"),
