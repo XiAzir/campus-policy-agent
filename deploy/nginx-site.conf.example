@@ -7,7 +7,20 @@ server {
     # ssl_certificate     /path/fullchain.pem;   # 沿用现有证书
     # ssl_certificate_key /path/privkey.pem;
 
-    client_max_body_size 220m;               # 资料包单包上限 200MB + 余量
+    client_max_body_size 220m;               # 默认资料包单包上限 200MB + 传输余量
+
+    # 针对大备份恢复专用路由单独放宽 client_max_body_size（备份恢复最大支持 10GB 流式上传）
+    location /api/admin/restore {
+        client_max_body_size 10240m;
+        proxy_pass http://127.0.0.1:8000;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-For $remote_addr;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_read_timeout 600s;
+        proxy_send_timeout 600s;
+        proxy_request_buffering off;
+    }
 
     location / {
         proxy_pass http://127.0.0.1:8000;

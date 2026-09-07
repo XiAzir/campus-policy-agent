@@ -1,0 +1,51 @@
+# /etc/systemd/system/campus-policy-rust.service
+# 部署方式：
+#   sudo cp deploy/campus-policy-rust.service /etc/systemd/system/
+#   sudo systemctl daemon-reload && sudo systemctl enable --now campus-policy-rust
+[Unit]
+Description=Campus Policy Agent (Rust Low-Memory Backend)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=www-data
+Group=www-data
+WorkingDirectory=/opt/campus-policy-agent
+
+# 环境变量通过外部私有环境文件注入（权限 600，严禁提交 git）
+EnvironmentFile=-/opt/campus-policy-agent/.env
+Environment=DATA_DIR=/opt/campus-policy-agent/data
+Environment=FRONTEND_DIST=/opt/campus-policy-agent/frontend/dist
+Environment=HOST=127.0.0.1
+Environment=PORT=8000
+Environment=RUST_BACKTRACE=1
+
+# 执行优化构建的 Rust 原生可执行文件（无 Python/Node.js 常驻运行时）
+ExecStart=/opt/campus-policy-agent/backend-rust/target/release/campus_policy_backend
+
+Restart=on-failure
+RestartSec=3
+
+# 安全加固与有界资源限制（Spec §4.1 / §9 / §12 [R14]）
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/campus-policy-agent/data /tmp
+
+# 崩溃转储保护：禁止生成 core dump 以防止内存中的敏感凭证落盘
+LimitCORE=0
+
+# 线程与文件描述符有界保护
+LimitNOFILE=1024
+LimitNPROC=64
+
+# 1C1G 目标服务器资源控制策略（通过资格测试后生效）：
+# 初始软限制 384MB，硬限制 512MB，禁用交换内存换页
+MemoryHigh=384M
+MemoryMax=512M
+MemorySwapMax=0
+
+[Install]
+WantedBy=multi-user.target

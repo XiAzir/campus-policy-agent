@@ -91,3 +91,18 @@ M4 出阶段门槛：恶意包与路径穿越防御通过、元数据修正限�
 | 代码质量校验与全套测试 | `cargo clippy --all-targets --locked -- -D warnings` & `cargo fmt --check` & `cargo test --locked` (WSL) | **0 warnings, 0 errors**，全套 36 项测试（15 单元 + 6 Agent 集成 + 6 API 集成 + 6 Ingest 集成 + 3 Backup 集成）全部通过 |
 
 M5 出阶段门槛：v2 双向备份结构完全符合、坏备份/路径穿越拦截有效、维护门 503 拦截生效、原子替换与回滚保护可靠、恢复后继续读写通过。
+
+## M6：1C1G 资源基准初测、发布启动脚本与交付（2026-09-07）
+
+| 项 | 命令 | 结果 |
+| --- | --- | --- |
+| 本地启动脚本交付 | `scripts/start-local-rust.ps1` | 支持指定独立端口（默认 8012）、自动加载 `.env` 模型配置、挂载独立数据目录 `.local-acceptance/rust-data` 与静态前端 `frontend/dist`，绝不干扰既有 Python 试用实例 |
+| 生产 systemd 单元模板 | `deploy/campus-policy-rust.service` | 遵循非特权用户运行、`NoNewPrivileges=true`、只读系统根、`LimitCORE=0` 防密钥泄露、`LimitNOFILE=1024`、`MemoryHigh=384M`、`MemoryMax=512M`、`MemorySwapMax=0` |
+| Nginx 反代配置更新 | `deploy/nginx-site.conf.example` | 配置 SSE 禁用缓冲 `proxy_buffering off`、针对 `/api/admin/restore` 放宽 `client_max_body_size 10240m` 并关闭请求体缓冲 `proxy_request_buffering off` |
+| 前端回归测试与构建 | `npm.cmd --prefix frontend test && npm.cmd --prefix frontend run build` | **26 passed (100% 通过)**；生产构建产出 `frontend/dist/` 正常分发 |
+| Rust Release 编译与二进制产出 | `cargo build --release --locked` (WSL) | 成功产出优化原生可执行二进制 `backend-rust/target/release/campus_policy_backend` |
+| D1 合成数据集基准实测 | `cargo run --release --bin bench_d1` (WSL) | **100 份文档、10,000 分块、1024 维 (39.1 MiB 裸向量)**：<br>• 100 次混合检索耗时 1.60s（平均 16.0ms）<br>• **p95 延迟: 0.020s**（远低于规范要求 3.0s）<br>• **初始全库常驻 RSS: 74.57 MiB**（远低于规范门槛 160.0 MiB）<br>• **百次检索后常驻 RSS: 87.92 MiB**（远低于规范门槛 224.0 MiB，增量仅 13.35 MiB） |
+| 代码质量校验与全套测试 | `cargo clippy --all-targets --locked -- -D warnings` & `cargo fmt --check` & `cargo test --locked` (WSL) | **0 warnings, 0 errors**，全套 36 项测试全部通过 |
+| 基准报告交付 | `docs/Rust内存基准报告.md` | 完整记录 D1 性能、指标门槛、交付清单及生产环境待验收事项 |
+
+M6 本机门槛：发布脚本完备、Release 编译通过、前端回归通过、D1 延迟与内存达标、待验收清单明确。生产服务器 1C1G 真实 cgroup 采样与 D2 规模容量待正式上线时执行。
