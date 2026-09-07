@@ -2,40 +2,35 @@
 
 为 30～80 位同学提供手机、电脑均可使用的政策问答网站：领域筛选、跨领域查询、原文行号溯源、版本管理（现行/往年/手动停用）。管理员负责资料发布，学生不上传文件。实施依据见 [plan.md](plan.md)。
 
-低内存重构交接见 [Rust 低内存重构 Spec](docs/Rust低内存重构Spec.md)（待实施，仅规范；当前仍为 Python 后端）。
+低内存重构规范见 [Rust 低内存重构 Spec](docs/Rust低内存重构Spec.md)；已在 `rust` 分支完成全部重构并全量测试通过（全套 36 项 Rust 测试全部通过，D1 混合检索 p95 仅 20ms、常驻内存仅 87.92MB，详见 [Rust 内存基准报告](docs/Rust内存基准报告.md) 与 [Rust 重构验收记录](docs/Rust重构验收记录.md)）。
 
 ## 结构
 
 | 目录 | 内容 |
 | --- | --- |
-| `backend/` | FastAPI + LangGraph 后端：资料包校验/导入/发布/版本停用（`app/pkgfmt.py`、`app/ingest.py`）、jieba+FTS5 与 NumPy 向量混合检索（`app/retrieval.py`、`app/vectors.py`）、问答 Agent 与 SSE 聊天管理（`app/agent.py`、`app/chat.py`）、备份恢复（`app/backup.py`）、API（`app/api.py`）；测试 `tests/`，脚本 `scripts/` |
+| `backend-rust/` | 原生 Rust 低内存后端：Axum 0.8 + rusqlite + jieba-rs + npyz；实现与 Python 100% 兼容的 API、流式 SSE、包安全校验与事务发布、v2 快照备份恢复与维护门；测试 `tests/`，基准 `src/bin/bench_d1.rs` |
+| `backend/` | 原 Python (FastAPI + LangGraph) 后端：作为行为对照和回滚基准保留（81 项测试全绿） |
 | `frontend/` | React + TypeScript（Vite）：用户端（访问码登录、IndexedDB 历史/设置、引用弹窗、来源选择）+ 隐藏管理端（hash 路由 `#/admin`） |
 | `skill/` | 本地预处理 Skill（`SKILL.md`）与确定性脚本：文字提取、分块、向量生成、打包、校验 |
-| `docs/` | [资料包格式说明](docs/资料包格式说明.md)、[兼容性验证](docs/兼容性验证.md)、[审查修复记录](docs/审查修复记录.md)、[人工测试清单](docs/人工测试清单.md) |
-| `deploy/` | systemd 单进程单元、Nginx HTTPS 代理片段、服务器部署脚本 |
+| `docs/` | [Rust低内存重构Spec](docs/Rust低内存重构Spec.md)、[Rust重构验收记录](docs/Rust重构验收记录.md)、[Rust内存基准报告](docs/Rust内存基准报告.md)、[资料包格式说明](docs/资料包格式说明.md)、[人工测试清单](docs/人工测试清单.md) |
+| `deploy/` | systemd 单元（Python 版与 Rust 低内存版 `campus-policy-rust.service`）、Nginx HTTPS 代理片段、服务器部署脚本 |
 
 ## 本地运行
 
-### 当前 worktree 试用（Windows PowerShell 7）
-
-本轮改版为“校园知事”：明亮粉蓝界面、Markdown 回答、默认折叠的原文卡片和真实 SSE 工作步骤。聊天、资料库、登录和管理界面均支持手机。
+### 方式一：运行原生 Rust 后端（低内存推荐，默认端口 8012）
 
 ```powershell
-# 首次安装和构建；当前 worktree 已执行过
-npm.cmd --prefix frontend ci
+# 1) 构建前端并编译 Rust release 二进制
 npm.cmd --prefix frontend run build
+cargo build --manifest-path backend-rust/Cargo.toml --release
 
-# 从仓库根目录启动；如 8011 被占用，可传 -Port 8012
-pwsh -NoProfile -File ./scripts/start-local.ps1
+# 2) 一键启动（自动加载根目录 .env，数据目录隔离于 .local-acceptance/rust-data）
+pwsh -NoProfile -File ./scripts/start-local-rust.ps1
 ```
 
-用户端 `http://127.0.0.1:8011/`；管理端 `http://127.0.0.1:8011/#/admin`。本机本轮试用访问码为 `webui-2026`，管理员初始密码为 `admin`；全新数据目录需管理员先设置访问码并发布资料。初始密码不会覆盖已有密码。
+用户端访问 `http://127.0.0.1:8012/`，管理端 `http://127.0.0.1:8012/#/admin`。
 
-启动脚本优先使用当前目录的 `.venv` 和 `.env`，缺失时读取主仓库的同名路径，**不复制或打印密钥**。数据固定写入当前 worktree 的 `.local-acceptance/webui-data`，不使用原仓库的 `backend/data` 或旧验收数据。可用 `-Python`、`-ConfigFile` 显式传入私有路径。前台运行时 `Ctrl+C` 停止；当前已有服务时直接访问，不重复启动。模型问答仍会调用外部 API，可能产生费用。
-
-本轮结果与证据边界见 [WebUI 改版验收记录](docs/WebUI改版验收记录-2026-09-06.md)。下面是新机器的普通环境安装方式；worktree 试用优先使用上面的隔离脚本。
-
-### 普通环境安装
+### 方式二：运行 Python 试用（作为对比基准，默认端口 8011）
 
 ```bash
 # 0) 环境依赖：Python 3.12 + Node 20+；密钥在根目录 .env（不入 git）
