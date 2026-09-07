@@ -525,10 +525,10 @@ async fn test_mock_upstream_error_flow() {
 
     let client = reqwest::Client::new();
     let chat_body = json!({
-        "question": "触发上游错误",
+        "question": "中文问题".repeat(350),
         "messages": [],
         "scope": {},
-        "profile": {}
+        "profile": {"college": format!("a{}", "中".repeat(60)), "entry_year": format!("a{}", "中".repeat(20))}
     });
 
     let res = client

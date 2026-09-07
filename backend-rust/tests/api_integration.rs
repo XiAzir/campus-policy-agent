@@ -326,7 +326,23 @@ async fn test_api_admin_metrics() {
     assert_eq!(res.status(), 200);
     let body: Value = res.json().await.unwrap();
     assert!(body["rss_bytes"].as_u64().unwrap() > 0);
+    assert!(body["disk_free_bytes"].as_u64().unwrap() > 0);
+    assert_ne!(body["disk_free_bytes"], 100_000_000_000u64);
+    #[cfg(target_os = "linux")]
+    assert!(body["cpu_s"].as_f64().unwrap() >= 0.0);
     assert!(body["at"].is_string());
+    let status = client
+        .get(format!("{}/api/admin/status", base_url))
+        .bearer_auth(admin_token)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(status.status(), 200);
+    let status: Value = status.json().await.unwrap();
+    assert!(status["data_dir_mb"].as_f64().unwrap() > 0.0);
+    assert!(
+        status["disk"]["total_gb"].as_f64().unwrap() >= status["disk"]["free_gb"].as_f64().unwrap()
+    );
 }
 
 #[tokio::test]
