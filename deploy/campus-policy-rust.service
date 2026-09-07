@@ -14,8 +14,11 @@ Group=www-data
 WorkingDirectory=/opt/campus-policy-agent
 
 # 环境变量通过外部私有环境文件注入（权限 600，严禁提交 git）
-EnvironmentFile=-/opt/campus-policy-agent/.env
-Environment=DATA_DIR=/opt/campus-policy-agent/data
+EnvironmentFile=/opt/campus-policy-agent/.env
+# DATA_DIR must be explicitly set in the private environment file after migration.
+# Expected layout: /var/lib/campus-policy-agent/data; its parent holds staging/rollback.
+StateDirectory=campus-policy-agent
+StateDirectoryMode=0700
 Environment=FRONTEND_DIST=/opt/campus-policy-agent/frontend/dist
 Environment=HOST=127.0.0.1
 Environment=PORT=8000
@@ -23,6 +26,7 @@ Environment=RUST_BACKTRACE=1
 
 # 执行优化构建的 Rust 原生可执行文件（无 Python/Node.js 常驻运行时）
 ExecStart=/opt/campus-policy-agent/backend-rust/target/release/campus_policy_backend
+ExecStartPre=/usr/bin/test -f ${DATA_DIR}/campus.db
 
 Restart=on-failure
 RestartSec=3
@@ -32,20 +36,20 @@ NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
 ProtectHome=true
-ReadWritePaths=/opt/campus-policy-agent/data /tmp
+ReadWritePaths=/var/lib/campus-policy-agent /tmp
 
 # 崩溃转储保护：禁止生成 core dump 以防止内存中的敏感凭证落盘
 LimitCORE=0
 
 # 线程与文件描述符有界保护
 LimitNOFILE=1024
-LimitNPROC=64
+TasksMax=64
 
 # 1C1G 目标服务器资源控制策略（通过资格测试后生效）：
-# 初始软限制 384MB，硬限制 512MB，禁用交换内存换页
-MemoryHigh=384M
-MemoryMax=512M
-MemorySwapMax=0
+# 未完成完整服务资格测试，不默认启用未经验证的硬限制。
+# MemoryHigh=384M
+# MemoryMax=512M
+# MemorySwapMax=0
 
 [Install]
 WantedBy=multi-user.target

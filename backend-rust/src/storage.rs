@@ -44,6 +44,43 @@ pub fn disk_space(path: &Path) -> io::Result<(u64, u64)> {
         .ok_or_else(|| io::Error::other("无法确定数据盘剩余空间"))
 }
 
+pub fn directory_bytes(path: &Path) -> io::Result<u64> {
+    fn visit(path: &Path, depth: usize) -> io::Result<u64> {
+        if depth > 32 { return Err(io::Error::other("数据目录层级超过上限")); }
+        let mut total = 0u64;
+        for entry in std::fs::read_dir(path)? {
+            let entry = entry?;
+            let kind = entry.file_type()?;
+            // Never follow links outside the data directory.
+            total = total.saturating_add(if kind.is_dir() { visit(&entry.path(), depth + 1)? }
+                else if kind.is_file() { entry.metadata()?.len() } else { 0 });
+        }
+        Ok(total)
+    }
+    visit(path, 0)
+}
+
+pub fn cpu_seconds() -> Option<f64> {
+    #[cfg(target_os = "linux")]
+    {
+        static TICKS: std::sync::OnceLock<Option<f64>> = std::sync::OnceLock::new();
+        let ticks = TICKS.get_or_init(|| {
+            let output = std::process::Command::new("getconf").arg("CLK_TCK").output().ok()?;
+            if !output.status.success() { return None; }
+            let value = String::from_utf8(output.stdout).ok()?.trim().parse::<f64>().ok()?;
+            (value > 0.0).then_some(value)
+        });
+        let stat = std::fs::read_to_string("/proc/self/stat").ok()?;
+        let (_, fields) = stat.rsplit_once(") ")?;
+        let fields: Vec<_> = fields.split_whitespace().collect();
+        let user = fields.get(11)?.parse::<u64>().ok()?;
+        let system = fields.get(12)?.parse::<u64>().ok()?;
+        Some((user + system) as f64 / (*ticks)?)
+    }
+    #[cfg(not(target_os = "linux"))]
+    { None }
+}
+
 #[derive(Default)]
 pub struct StagedFiles { paths: Vec<std::path::PathBuf> }
 

@@ -63,7 +63,7 @@ def proc_stats(pid: int) -> dict:
         for line in Path(f"/proc/{pid}/status").read_text().splitlines():
             key, _, rest = line.partition(":")
             if key in ("VmRSS", "VmHWM", "RssAnon", "RssFile", "Threads"):
-                out[key] = int(rest.strip().split()[0]) * 1024
+                out[key] = int(rest.strip().split()[0]) * (1 if key == "Threads" else 1024)
         n_fd = sum(1 for _ in os.scandir(f"/proc/{pid}/fd"))
         out["fds"] = n_fd
     except (OSError, ValueError, IndexError):
@@ -92,6 +92,8 @@ def main():
     ap.add_argument("--duration", type=float, default=600.0)
     ap.add_argument("--label", default="")
     args = ap.parse_args()
+    if not 0 < args.interval <= 0.1 or args.duration <= 0:
+        ap.error("interval 必须大于 0 且不超过 0.1 秒；duration 必须为正数")
 
     stop = False
 

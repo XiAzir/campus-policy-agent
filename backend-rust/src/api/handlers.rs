@@ -710,20 +710,10 @@ pub async fn admin_status(
         .await
         .map_err(|e| ApiError::internal(e.to_string()))?;
 
-    let mut data_bytes = 0u64;
-    if let Ok(entries) = std::fs::read_dir(&state.config.data_dir) {
-        for entry in entries.flatten() {
-            if let Ok(meta) = entry.metadata() {
-                data_bytes += meta.len();
-            }
-        }
-    }
-
-    let (free_bytes, total_bytes) = {
-        let mut sys = System::new();
-        sys.refresh_memory();
-        (sys.available_memory(), sys.total_memory())
-    };
+    let data_dir = state.config.data_dir.clone();
+    let (data_bytes, (free_bytes, total_bytes)) = diagnostic_job(move || {
+        Ok((crate::storage::directory_bytes(&data_dir)?, crate::storage::disk_space(&data_dir)?))
+    }).await?;
     let free_gb = (free_bytes as f64) / 1_000_000_000.0;
     let total_gb = (total_bytes as f64) / 1_000_000_000.0;
     let used_gb = (total_gb - free_gb).max(0.0);
@@ -764,15 +754,14 @@ pub async fn admin_metrics(
 ) -> ApiResult<Json<serde_json::Value>> {
     require_admin(&headers, &state)?;
 
-    let mut sys = System::new();
-    let pid = Pid::from_u32(std::process::id());
-    sys.refresh_processes(ProcessesToUpdate::Some(&[pid]), true);
-
-    let (rss_bytes, cpu_s) = if let Some(proc) = sys.process(pid) {
-        (proc.memory(), proc.cpu_usage() as f64)
-    } else {
-        (0, 0.0)
-    };
+    let data_dir = state.config.data_dir.clone();
+    let (rss_bytes, cpu_s, disk_free) = diagnostic_job(move || {
+        let mut sys = System::new();
+        let pid = Pid::from_u32(std::process::id());
+        sys.refresh_processes(ProcessesToUpdate::Some(&[pid]), true);
+        let rss = sys.process(pid).map(|p| p.memory());
+        Ok((rss, crate::storage::cpu_seconds(), crate::storage::disk_space(&data_dir)?.0))
+    }).await?;
 
     let (running, waiting) = state.chats.counts().await;
 
@@ -780,7 +769,7 @@ pub async fn admin_metrics(
         "at": utcnow(),
         "rss_bytes": rss_bytes,
         "cpu_s": cpu_s,
-        "disk_free_bytes": 100_000_000_000u64,
+        "disk_free_bytes": disk_free,
         "running": running,
         "waiting": waiting
     })))
@@ -1275,4 +1264,13 @@ fn multipart_error(error: axum::extract::multipart::MultipartError) -> ApiError 
         || error.to_string().contains("超过上限") { StatusCode::PAYLOAD_TOO_LARGE }
         else { StatusCode::BAD_REQUEST };
     ApiError::new(status, "上传内容不完整、格式错误或超过请求体上限")
+}
+
+async fn diagnostic_job<T: Send + 'static>(work: impl FnOnce() -> std::io::Result<T> + Send + 'static) -> ApiResult<T> {
+    static SLOTS: std::sync::OnceLock<Arc<tokio::sync::Semaphore>> = std::sync::OnceLock::new();
+    let permit = SLOTS.get_or_init(|| Arc::new(tokio::sync::Semaphore::new(1))).clone()
+        .try_acquire_owned().map_err(|_| ApiError::service_unavailable("指标采样忙，请稍后重试"))?;
+    tokio::task::spawn_blocking(move || { let _permit = permit; work() }).await
+        .map_err(|_| ApiError::internal("指标采样任务失败"))?
+        .map_err(|_| ApiError::service_unavailable("无法读取系统或数据盘指标"))
 }

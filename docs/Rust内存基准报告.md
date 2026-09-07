@@ -1,56 +1,23 @@
-# Rust 内存与性能基准报告 (M6 本机实测)
+# Rust 内存与性能基准记录（尚未通过资格验收）
 
-> 依照 `docs/Rust低内存重构Spec.md` §3 及 §11 进行测试与记录。
-> 测试机环境：Windows 11 + WSL2 (Ubuntu 26.04 Linux 内核 5.15.167.4-microsoft-standard-WSL2)，AMD CPU / 64位架构。
-> 工具链：rustc/cargo 1.98.1 release profile，node v20.18.0，python 3.14 / 3.12。
+## 历史初测的适用范围
 
----
+2026-09-07 更正：此前使用 `bench_d1` 独立检索程序的 RSS 判定完整 HTTP 服务达标，证据不足，撤回所有内存 PASS 和“无泄漏”结论。
 
-## 1. D1 合成数据集规格与基准说明
+历史环境为 Windows/WSL Ubuntu 26.04，不是目标 Ubuntu 24.04 的 1C1G。D1 含 100 文档、10,000 分块、1024 维 float32。原记录中的 74.57 MiB 初始 RSS、87.92 MiB 检索后 RSS、20 ms p95 仅属于独立 `bench_d1` 进程的单次初测；本轮没有重新测量这些数值。
 
-- **文档数**：100 份标准合成中文高校政策文件
-- **分块数**：10,000 个连续文本分块（chunks）
-- **向量维度**：1024 维 float32 归一化向量
-- **裸向量体积**：10,000 × 1024 × 4 字节 = 39.1 MiB
-- **测试程序**：`backend-rust/src/bin/bench_d1.rs`（编译为 release 独立二进制运行）
+该程序没有覆盖 HTTP/SSE、完整 Agent、多轮上下文、鉴权、上传、发布、备份下载和恢复，不能替代 Spec §3、§11 的完整服务验收。100 次检索前后 RSS 差值也不能证明不存在内存泄漏。
 
----
+## 尚未执行的资格测试
 
-## 2. 测量结果与规范门槛对照表
+- [ ] 在目标 Ubuntu 24.04、1CPU/1GB、cgroup v2 环境运行完整 release 服务。
+- [ ] Python 与 Rust 使用同一数据、模型模拟响应、配置，各执行至少三次对照。
+- [ ] D1/D3 冷启动、预热、空闲、问答、排队、导入、发布、备份下载、恢复的独立峰值。
+- [ ] 至少 10Hz 外部采样 RSS/HWM、RssAnon/RssFile、cgroup anon/file/kernel/sock、memory.peak、OOM、swap、FD 和实际线程数。
+- [ ] 两小时稳定性、1000 次问答、断连、上游故障和慢客户端测试。
+- [ ] 经授权的实际 D2 数据容量验收，记录拒绝边界与剩余磁盘余量。
+- [ ] 完整服务在 MemoryHigh=384M、MemoryMax=512M、MemorySwapMax=0 下的资格测试，无 OOM、无静默降级。
 
-| 评估指标 | Spec 规定门槛 (验收标准) | Rust Release 实测值 (D1) | 达标判定 | 收益与备注 |
-| :--- | :--- | :--- | :---: | :--- |
-| **混合检索吞吐速度** | 100 次检索耗时需在合理范围 | **1.60 秒** (平均每次 16.0 ms) | **PASS** | 极速全库扫描 |
-| **本地检索 p95 延迟** | $\le 3.0$ 秒 | **0.020 秒 (20 ms)** | **PASS** | 远优于门槛 150 倍 |
-| **本地检索 p50 延迟** | 报告中位数指标 | **0.016 秒 (16 ms)** | **PASS** | 极低延迟响应 |
-| **本地检索 p99 延迟** | 报告尾部延迟指标 | **0.026 秒 (26 ms)** | **PASS** | 99% 请求在 30ms 内完成 |
-| **全库加载后常驻内存 (RSS)** | $\le 160.0$ MiB | **74.57 MiB** | **PASS** | 优于门槛 85 MiB 以上 |
-| **100 次混合检索后内存 (RSS)**| $\le 224.0$ MiB | **87.92 MiB** | **PASS** | 优于门槛 136 MiB 以上 |
-| **检索阶段内存增量 (RSS Delta)**| 有界保护 | **13.35 MiB** | **PASS** | 无内存泄漏，工作缓存自动受控 |
+采样器 `scripts/rust/sample_memory.py` 必须运行在被测 cgroup 外。未能读取的指标不得伪造为零；线程数为计数，不乘 1024。
 
----
-
-## 3. 前端与跨端集成验证
-
-1. **前端 26 项单元/组件测试**：
-   - 运行 `npm.cmd --prefix frontend test`：**26 passed (100% 通过)**。
-2. **前端生产打包构建**：
-   - 运行 `npm.cmd --prefix frontend run build`：成功产出 `frontend/dist/`（371.72 kB JS, 34.46 kB CSS）。
-3. **Rust 后端挂载分发**：
-   - Rust 后端通过 `FRONTEND_DIST` 环境变量挂载静态服务，未命中 `/api` 路由时安全 fallback 提供 SPA 前端。
-
----
-
-## 4. 部署与启动交付物清单
-
-- **本机一键启动脚本**：`scripts/start-local-rust.ps1`（支持独立端口与隔离数据目录，默认端口 8012）。
-- **生产 systemd 单元模板**：`deploy/campus-policy-rust.service`（具备 `LimitCORE=0`, `MemoryHigh=384M`, `MemoryMax=512M`, `MemorySwapMax=0`, `NoNewPrivileges=true`）。
-- **反向代理 Nginx 示例**：`deploy/nginx-site.conf.example`（追加 `/api/admin/restore` 专用 10GB 上传及缓冲关闭配置）。
-
----
-
-## 5. 待正式生产环境（1C1G 真实服务器）验收项说明
-
-按照重构规范原则，本机虽已通过全套功能测试、回归测试和 D1 基准测试，以下生产环境指标需在最终上线部署到物理 1C1G 云服务器后进行最后确认：
-- [ ] 目标 Ubuntu 24.04 裸机或云主机单核 1GB 内存 cgroup v2 采样（使用 `scripts/rust/sample_memory.py`）。
-- [ ] 若有真实未脱敏的 D2 规模私有业务资料，在获得正式授权后于生产环境执行容量测试。
+当前结论：代码回归测试与资源资格测试是两回事。生产部署模板暂不启用未经验证的 512MiB 硬限制，全部资格门槛通过前禁止上线。
