@@ -261,12 +261,12 @@ impl DbPool {
                 Some("写连接已关闭".to_string()),
             )
         })?;
-        let _ = rx.await;
+        rx.await.map_err(|_| rusqlite::Error::InvalidQuery)??;
 
         for rtx in &self.reader_txs {
             let (tx, rx) = tokio::sync::oneshot::channel();
-            let _ = rtx.send(JobMessage::Close(tx));
-            let _ = rx.await;
+            rtx.send(JobMessage::Close(tx)).map_err(|_| rusqlite::Error::InvalidQuery)?;
+            rx.await.map_err(|_| rusqlite::Error::InvalidQuery)??;
         }
         Ok(())
     }
@@ -761,7 +761,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_read_legacy_database_fixture() {
-        let legacy_db_path = Path::new("tests/fixtures/legacy_data/campus.db");
+        let fixture = crate::test_fixtures::fixture_copy();
+        let legacy_db_path = &fixture.path().join("campus.db");
         if !legacy_db_path.exists() {
             eprintln!("legacy_data/campus.db 不存在，跳过测试");
             return;

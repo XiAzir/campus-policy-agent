@@ -355,6 +355,9 @@ pub fn validate_manifest(manifest: &Value) -> Result<Vec<Value>, PackageError> {
                         where_ctx, sid
                     )));
                 }
+                if sec.get("title").and_then(Value::as_str).is_none() {
+                    return Err(PackageError::ManifestInvalid("章节 title 必须是字符串".into()));
+                }
                 let start_l = sec.get("start_line").and_then(|v| v.as_i64()).unwrap_or(0);
                 let end_l = sec.get("end_line").and_then(|v| v.as_i64()).unwrap_or(0);
                 if !(1 <= start_l && start_l <= end_l && end_l <= line_count) {
@@ -362,6 +365,21 @@ pub fn validate_manifest(manifest: &Value) -> Result<Vec<Value>, PackageError> {
                         "{} 章节 {} 行区间越界",
                         where_ctx, sid
                     )));
+                }
+            }
+        }
+
+        if let Some(domains) = doc.get("domains") {
+            let domains = domains.as_array().ok_or_else(|| PackageError::ManifestInvalid("domains 必须为数组".into()))?;
+            for domain in domains {
+                if domain.get("tag").and_then(Value::as_str).is_none_or(|s| s.trim().is_empty()) {
+                    return Err(PackageError::ManifestInvalid("领域 tag 必须为非空字符串".into()));
+                }
+                if let Some(ids) = domain.get("section_ids") {
+                    let ids = ids.as_array().ok_or_else(|| PackageError::ManifestInvalid("section_ids 必须为数组".into()))?;
+                    if ids.iter().any(|id| id.as_str().is_none_or(|s| !section_ids.contains(s))) {
+                        return Err(PackageError::ManifestInvalid("领域引用不存在的章节".into()));
+                    }
                 }
             }
         }

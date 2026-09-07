@@ -68,6 +68,71 @@ async fn spawn_test_server() -> (String, String, String) {
 }
 
 #[tokio::test]
+async fn forwarded_headers_cannot_reset_login_bucket() {
+    let (url, _, _) = spawn_test_server().await;
+    let client = reqwest::Client::new();
+    for index in 0..12 {
+        let response = client.post(format!("{url}/api/auth/admin/login"))
+            .header("x-forwarded-for", format!("192.0.2.{index}"))
+            .json(&serde_json::json!({"password":"definitely-wrong"})).send().await.unwrap();
+        assert_eq!(response.status().as_u16(), if index < 10 { 401 } else { 429 });
+    }
+}
+
+#[tokio::test]
+async fn chunked_body_limit_returns_json_413() {
+    let (url, _, _) = spawn_test_server().await;
+    let body = futures_util::stream::iter((0..5).map(|_| Ok::<_, std::io::Error>(vec![b' '; 64 * 1024])));
+    let response = reqwest::Client::new().post(format!("{url}/api/auth/login"))
+        .header("content-type", "application/json").body(reqwest::Body::wrap_stream(body))
+        .send().await.unwrap();
+    assert_eq!(response.status(), 413);
+    assert!(response.json::<Value>().await.unwrap()["detail"].is_string());
+}
+
+#[tokio::test]
+async fn valid_package_over_two_mib_uploads_and_whole_doc_tag_publishes() {
+    use std::io::{Read, Write};
+    let (url, _, token) = spawn_test_server().await;
+    let file = std::fs::File::open("tests/fixtures/packages/small_v1.zip").unwrap();
+    let mut source = zip::ZipArchive::new(file).unwrap();
+    let mut output = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+    for index in 0..source.len() {
+        let mut entry = source.by_index(index).unwrap();
+        let mut bytes = vec![];
+        entry.read_to_end(&mut bytes).unwrap();
+        if entry.name() == "manifest.json" {
+            let mut manifest: Value = serde_json::from_slice(&bytes).unwrap();
+            manifest["documents"][0]["domains"] = serde_json::json!([{"tag":"whole-doc-regression", "section_ids":[]}]);
+            bytes = serde_json::to_vec(&manifest).unwrap();
+            bytes.extend(std::iter::repeat_n(b' ', 2400000));
+        }
+        output.start_file(entry.name(), zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored)).unwrap();
+        output.write_all(&bytes).unwrap();
+    }
+    let bytes = output.finish().unwrap().into_inner();
+    assert!(bytes.len() > 2 * 1024 * 1024);
+    let form = reqwest::multipart::Form::new().part("file", reqwest::multipart::Part::bytes(bytes).file_name("large.zip"));
+    let client = reqwest::Client::new();
+    let response = client.post(format!("{url}/api/admin/packages")).bearer_auth(&token).multipart(form).send().await.unwrap();
+    assert_eq!(response.status(), 200, "{}", response.text().await.unwrap());
+    let id = response.json::<Value>().await.unwrap()["id"].as_i64().unwrap();
+    let response = client.post(format!("{url}/api/admin/packages/{id}/publish")).bearer_auth(&token)
+        .json(&serde_json::json!({})).send().await.unwrap();
+    assert_eq!(response.status(), 200, "{}", response.text().await.unwrap());
+    let response = client.get(format!("{url}/api/admin/backup")).bearer_auth(token).send().await.unwrap();
+    assert_eq!(response.status(), 200);
+    let bytes = response.bytes().await.unwrap();
+    let mut archive = zip::ZipArchive::new(std::io::Cursor::new(bytes)).unwrap();
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("db.sqlite");
+    std::io::copy(&mut archive.by_name("db.sqlite").unwrap(), &mut std::fs::File::create(&path).unwrap()).unwrap();
+    let db = rusqlite::Connection::open(path).unwrap();
+    let count: i64 = db.query_row("SELECT COUNT(*) FROM doc_tags WHERE tag='whole-doc-regression' AND section_id IS NULL", [], |r| r.get(0)).unwrap();
+    assert_eq!(count, 1);
+}
+
+#[tokio::test]
 async fn test_api_auth_state() {
     let (base_url, _, _) = spawn_test_server().await;
     let client = reqwest::Client::new();

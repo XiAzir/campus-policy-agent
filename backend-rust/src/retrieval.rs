@@ -485,7 +485,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_hybrid_search_with_legacy_fixtures() {
-        let legacy_data_dir = Path::new("tests/fixtures/legacy_data");
+        let fixture = crate::test_fixtures::fixture_copy();
+        let legacy_data_dir = fixture.path();
         let db_path = legacy_data_dir.join("campus.db");
         if !db_path.exists() {
             return;

@@ -18,12 +18,10 @@ use std::collections::HashMap;
 use std::convert::Infallible;
 use std::fs::File;
 use std::io::{BufRead, BufReader, Write};
-use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 use sysinfo::{Pid, ProcessesToUpdate, System};
 use tokio_stream::StreamExt;
-use tokio_stream::wrappers::ReceiverStream;
 
 // ---------------- 鉴权提取辅助 ----------------
 
@@ -102,7 +100,7 @@ pub async fn login(
         ));
     };
 
-    if !verify_password(&body.code, &hash) {
+    if !password_job(move || verify_password(&body.code, &hash)).await? {
         let _ = state
             .db
             .audit("system".into(), "login_failed".into(), format!("ip={}", ip))
@@ -141,7 +139,7 @@ pub async fn admin_login(
         .await
         .map_err(|e| ApiError::internal(e.to_string()))?;
 
-    if !verify_password(&body.password, stored.as_deref().unwrap_or("")) {
+    if !password_job(move || verify_password(&body.password, stored.as_deref().unwrap_or(""))).await? {
         let _ = state
             .db
             .audit(
@@ -187,7 +185,8 @@ pub async fn admin_password(
         .await
         .map_err(|e| ApiError::internal(e.to_string()))?;
 
-    if !verify_password(&body.old_password, stored.as_deref().unwrap_or("")) {
+    let old_password = body.old_password.clone();
+    if !password_job(move || verify_password(&old_password, stored.as_deref().unwrap_or(""))).await? {
         return Err(ApiError::unauthorized("当前密码不正确"));
     }
 
@@ -195,7 +194,7 @@ pub async fn admin_password(
         return Err(ApiError::bad_request("新密码不能与当前密码相同"));
     }
 
-    let new_hash = hash_password(&body.new_password, None);
+    let new_hash = password_job(move || hash_password(&body.new_password, None)).await?;
     state
         .db
         .setting_set("admin_password_hash".to_string(), new_hash)
@@ -309,11 +308,7 @@ pub async fn source_file(
         .map_err(|e| ApiError::internal(e.to_string()))?
         .ok_or_else(|| ApiError::not_found("资料不存在"))?;
 
-    let ext = PathBuf::from(&doc.title)
-        .extension()
-        .and_then(|s| s.to_str())
-        .map(|s| format!(".{}", s.to_lowercase()))
-        .unwrap_or_else(|| format!(".{}", doc.doc_type));
+    let ext = format!(".{}", doc.doc_type);
 
     let file_path = state
         .config
@@ -325,7 +320,15 @@ pub async fn source_file(
         return Err(ApiError::not_found("原文件缺失"));
     }
 
-    let file_bytes = std::fs::read(&file_path).map_err(|_| ApiError::internal("读取原文件失败"))?;
+    let file = tokio::fs::File::open(&file_path).await.map_err(|_| ApiError::internal("读取原文件失败"))?;
+    let stream = futures_util::stream::try_unfold(file, |mut file| async move {
+        use tokio::io::AsyncReadExt;
+        let mut bytes = vec![0u8; 64 * 1024];
+        let count = file.read(&mut bytes).await?;
+        if count == 0 { return Ok::<_, std::io::Error>(None); }
+        bytes.truncate(count);
+        Ok(Some((bytes, file)))
+    });
 
     let filename = format!("{}.{}", doc.title, doc.doc_type);
     let disposition = format!(
@@ -333,7 +336,7 @@ pub async fn source_file(
         urlencoding::encode(&filename)
     );
 
-    let mut response = (StatusCode::OK, file_bytes).into_response();
+    let mut response = axum::body::Body::from_stream(stream).into_response();
     let resp_headers = response.headers_mut();
     resp_headers.insert(
         CONTENT_TYPE,
@@ -528,7 +531,7 @@ pub async fn chat(
     let question = body.question;
 
     let runner = move |_job: Arc<crate::chat::ChatJob>,
-                       tx: tokio::sync::mpsc::Sender<serde_json::Value>| {
+                       tx: crate::chat::EventSender| {
         let agent = agent_clone;
         async move {
             let metrics = TurnMetrics::new();
@@ -586,7 +589,7 @@ pub async fn chat(
         .await
         .map_err(|e| ApiError::rate_limited(e.to_string()))?;
 
-    let stream = ReceiverStream::new(rx).take_while(|val| val.get("event").and_then(|v| v.as_str()) != Some("__end__")).filter_map(|val| {
+    let stream = rx.take_while(|val| val.get("event").and_then(|v| v.as_str()) != Some("__end__")).filter_map(|val| {
         if val.get("event").and_then(|v| v.as_str()) == Some("__end__") {
             None
         } else {
@@ -682,7 +685,7 @@ pub async fn admin_set_access_code(
         return Err(ApiError::bad_request("访问码长度必须在 4-128 字符之间"));
     }
 
-    let hash = hash_password(&body.code, None);
+    let hash = password_job(move || hash_password(&body.code, None)).await?;
     state
         .db
         .setting_set("access_code_hash".to_string(), hash)
@@ -1181,7 +1184,8 @@ pub async fn admin_restore(
         std::sync::atomic::Ordering::SeqCst).is_err() {
         return Err(ApiError::conflict("已有恢复任务正在进行"));
     }
-    let _restore_guard = crate::maintenance::RestoreGuard(state.maintenance.clone());
+    let _restore_guard = crate::maintenance::RestoreGuard(state.maintenance.clone(),
+        crate::backup::restore_marker_path(&state.config.data_dir));
 
     // 取消所有进行中问答
     state.chats.cancel_all().await;
@@ -1273,4 +1277,12 @@ async fn diagnostic_job<T: Send + 'static>(work: impl FnOnce() -> std::io::Resul
     tokio::task::spawn_blocking(move || { let _permit = permit; work() }).await
         .map_err(|_| ApiError::internal("指标采样任务失败"))?
         .map_err(|_| ApiError::service_unavailable("无法读取系统或数据盘指标"))
+}
+
+async fn password_job<T: Send + 'static>(work: impl FnOnce() -> T + Send + 'static) -> ApiResult<T> {
+    static SLOTS: std::sync::OnceLock<Arc<tokio::sync::Semaphore>> = std::sync::OnceLock::new();
+    let permit = SLOTS.get_or_init(|| Arc::new(tokio::sync::Semaphore::new(2))).clone()
+        .try_acquire_owned().map_err(|_| ApiError::rate_limited("密码服务忙，请稍后重试"))?;
+    tokio::task::spawn_blocking(move || { let _permit = permit; work() }).await
+        .map_err(|_| ApiError::internal("密码服务失败"))
 }

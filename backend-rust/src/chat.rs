@@ -6,6 +6,35 @@ use tokio::sync::{Mutex, Notify, mpsc, watch};
 
 pub type JobEvent = serde_json::Value;
 
+struct BufferedEvent { value: JobEvent, _bytes: tokio::sync::OwnedSemaphorePermit }
+
+#[derive(Clone)]
+pub struct EventSender { tx: mpsc::Sender<BufferedEvent>, bytes: Arc<tokio::sync::Semaphore> }
+
+impl EventSender {
+    pub async fn send(&self, value: JobEvent) -> Result<(), std::io::Error> {
+        let size = serde_json::to_vec(&value).map_err(std::io::Error::other)?.len().max(1);
+        if size > 1024 * 1024 { return Err(std::io::Error::other("SSE 事件超过 1 MiB")); }
+        let permit = tokio::select! {
+            _ = self.tx.closed() => return Err(std::io::Error::other("客户端已断开")),
+            permit = self.bytes.clone().acquire_many_owned(size as u32) => permit.map_err(std::io::Error::other)?,
+        };
+        self.tx.send(BufferedEvent { value, _bytes: permit }).await.map_err(|_| std::io::Error::other("客户端已断开"))
+    }
+    pub async fn closed(&self) { self.tx.closed().await; }
+}
+
+pub struct EventReceiver { rx: mpsc::Receiver<BufferedEvent> }
+impl EventReceiver {
+    pub async fn recv(&mut self) -> Option<JobEvent> { self.rx.recv().await.map(|e| e.value) }
+}
+impl futures_util::Stream for EventReceiver {
+    type Item = JobEvent;
+    fn poll_next(mut self: std::pin::Pin<&mut Self>, cx: &mut std::task::Context<'_>) -> std::task::Poll<Option<JobEvent>> {
+        self.rx.poll_recv(cx).map(|value| value.map(|e| e.value))
+    }
+}
+
 #[derive(Debug, Clone)]
 pub enum ChatManagerError { ClientAlreadyRunning, QueueFull(usize, usize) }
 impl std::fmt::Display for ChatManagerError {
@@ -21,7 +50,7 @@ impl std::error::Error for ChatManagerError {}
 pub struct ChatJob {
     pub request_id: String,
     pub client_id: String,
-    pub tx: mpsc::Sender<JobEvent>,
+    pub tx: EventSender,
     cancel: watch::Sender<bool>,
     finished: watch::Sender<bool>,
 }
@@ -46,8 +75,8 @@ impl ChatManager {
     }
 
     pub async fn submit<F, Fut>(self: &Arc<Self>, client_id: String, timeout_s: u64, runner: F)
-        -> Result<(Arc<ChatJob>, mpsc::Receiver<JobEvent>), ChatManagerError>
-    where F: FnOnce(Arc<ChatJob>, mpsc::Sender<JobEvent>) -> Fut + Send + 'static,
+        -> Result<(Arc<ChatJob>, EventReceiver), ChatManagerError>
+    where F: FnOnce(Arc<ChatJob>, EventSender) -> Fut + Send + 'static,
         Fut: std::future::Future<Output = ()> + Send + 'static,
     {
         let mut state = self.state.lock().await;
@@ -56,6 +85,8 @@ impl ChatManager {
             return Err(ChatManagerError::QueueFull(state.running.len(), state.waiting.len()));
         }
         let (tx, rx) = mpsc::channel(64);
+        let tx = EventSender { tx, bytes: Arc::new(tokio::sync::Semaphore::new(1024 * 1024)) };
+        let rx = EventReceiver { rx };
         let (cancel, _) = watch::channel(false);
         let (finished, _) = watch::channel(false);
         let job = Arc::new(ChatJob { request_id: hex::encode(rand::random::<[u8; 16]>()), client_id: client_id.clone(), tx, cancel, finished });
@@ -75,7 +106,7 @@ impl ChatManager {
     }
 
     async fn execute<F, Fut>(self: Arc<Self>, job: Arc<ChatJob>, position: usize, timeout_s: u64, runner: F)
-    where F: FnOnce(Arc<ChatJob>, mpsc::Sender<JobEvent>) -> Fut + Send + 'static,
+    where F: FnOnce(Arc<ChatJob>, EventSender) -> Fut + Send + 'static,
         Fut: std::future::Future<Output = ()> + Send + 'static,
     {
         let mut cancellation = job.cancel.subscribe();

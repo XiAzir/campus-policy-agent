@@ -137,7 +137,7 @@ impl Agent {
         scope: &mut TurnScope,
         evidence: &mut Vec<EvidenceItem>,
         metrics: Option<&TurnMetrics>,
-        emit_tx: tokio::sync::mpsc::Sender<Value>,
+        emit_tx: crate::chat::EventSender,
     ) -> Value {
         let emit = |value| { let tx = emit_tx.clone(); async move { let _ = tx.send(value).await; } };
         let query = args
@@ -567,7 +567,7 @@ impl Agent {
         mut scope: TurnScope,
         profile: HashMap<String, String>,
         metrics: &TurnMetrics,
-        emit_tx: tokio::sync::mpsc::Sender<Value>,
+        emit_tx: crate::chat::EventSender,
     ) -> Result<AgentResult, LlmError> {
         let emit = |value| { let tx = emit_tx.clone(); async move { let _ = tx.send(value).await; } };
         let mut evidence: Vec<EvidenceItem> = Vec::new();
