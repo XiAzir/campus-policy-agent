@@ -883,25 +883,25 @@ pub async fn admin_package_upload(
         .data_dir
         .parent()
         .unwrap_or(&state.config.data_dir);
-    let tmp_zip = parent.join(format!(
-        "cpb-upload-{}.zip",
-        hex::encode(rand::random::<[u8; 8]>())
-    ));
+    let tmp_upload = tempfile::Builder::new().prefix("cpb-upload-").suffix(".zip")
+        .tempfile_in(parent).map_err(|e| ApiError::internal(e.to_string()))?;
+    let tmp_zip = tmp_upload.path().to_path_buf();
 
     let mut total_bytes = 0u64;
     let max_bytes = (state.config.max_package_mb as u64) * 1024 * 1024;
     let mut file_saved = false;
 
-    while let Ok(Some(mut field)) = multipart.next_field().await {
+    while let Some(mut field) = multipart.next_field().await.map_err(multipart_error)? {
         let name = field.name().unwrap_or("").to_string();
         if name == "file" {
+            if file_saved { return Err(ApiError::bad_request("只能上传一个文件")); }
             if let Some(fname) = field.file_name() {
                 original_filename = fname.to_string();
             }
 
             let mut out_file =
                 File::create(&tmp_zip).map_err(|e| ApiError::internal(e.to_string()))?;
-            while let Ok(Some(chunk)) = field.chunk().await {
+            while let Some(chunk) = field.chunk().await.map_err(multipart_error)? {
                 total_bytes += chunk.len() as u64;
                 if total_bytes > max_bytes {
                     let _ = std::fs::remove_file(&tmp_zip);
@@ -913,11 +913,13 @@ pub async fn admin_package_upload(
                         ),
                     ));
                 }
+                crate::storage::require_space(parent, chunk.len() as u64).map_err(ApiError::bad_request)?;
                 std::io::Write::write_all(&mut out_file, &chunk)
                     .map_err(|e| ApiError::internal(e.to_string()))?;
             }
             file_saved = true;
-            break;
+        } else {
+            while field.chunk().await.map_err(multipart_error)?.is_some() {}
         }
     }
 
@@ -1071,15 +1073,22 @@ pub async fn admin_backup(
         )
         .await;
 
-    let file_bytes = std::fs::read(&out_path)
+    let file = tokio::fs::File::open(&out_path).await
         .map_err(|e| ApiError::internal(format!("读取备份结果失败: {}", e)))?;
-    let _ = std::fs::remove_file(&out_path);
+    let stream = futures_util::stream::try_unfold((file, tmp_zip), |(mut file, temp)| async move {
+        use tokio::io::AsyncReadExt;
+        let mut bytes = vec![0u8; 64 * 1024];
+        let count = file.read(&mut bytes).await?;
+        if count == 0 { return Ok::<_, std::io::Error>(None); }
+        bytes.truncate(count);
+        Ok(Some((bytes, (file, temp))))
+    });
 
     let ts = utcnow().replace(':', "");
     let filename = format!("backup-{}.zip", ts);
     let disposition = format!("attachment; filename=\"{}\"", filename);
 
-    let mut response = (StatusCode::OK, file_bytes).into_response();
+    let mut response = axum::body::Body::from_stream(stream).into_response();
     let resp_headers = response.headers_mut();
     resp_headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/zip"));
     if let Ok(val) = HeaderValue::from_str(&disposition) {
@@ -1115,27 +1124,30 @@ pub async fn admin_restore(
     while let Some(mut field) = multipart
         .next_field()
         .await
-        .map_err(|e| ApiError::bad_request(format!("解析 multipart 失败: {}", e)))?
+        .map_err(multipart_error)?
     {
         if field.name() == Some("file") {
+            if found_file { return Err(ApiError::bad_request("只能上传一个文件")); }
             let mut out = File::create(&upload_path)
                 .map_err(|e| ApiError::internal(format!("写入上传文件失败: {}", e)))?;
             while let Some(chunk) = field
                 .chunk()
                 .await
-                .map_err(|e| ApiError::bad_request(format!("读取上传分块失败: {}", e)))?
+                .map_err(multipart_error)?
             {
                 total_bytes += chunk.len() as u64;
                 if total_bytes > crate::backup::MAX_EXPANDED {
                     return Err(ApiError::payload_too_large("备份上传大小超限"));
                 }
+                crate::storage::require_space(parent, chunk.len() as u64).map_err(ApiError::bad_request)?;
                 out.write_all(&chunk)
                     .map_err(|e| ApiError::internal(format!("写入分块失败: {}", e)))?;
             }
             out.flush()
                 .map_err(|e| ApiError::internal(format!("刷新上传文件失败: {}", e)))?;
             found_file = true;
-            break;
+        } else {
+            while field.chunk().await.map_err(multipart_error)?.is_some() {}
         }
     }
 
@@ -1195,13 +1207,11 @@ pub async fn admin_restore(
         .map_err(|e| ApiError::bad_request(e.to_string()))?;
 
     // 3. 进入维护模式
-    if state.maintenance.is_restoring() {
+    if state.maintenance.restoring.compare_exchange(false, true, std::sync::atomic::Ordering::SeqCst,
+        std::sync::atomic::Ordering::SeqCst).is_err() {
         return Err(ApiError::conflict("已有恢复任务正在进行"));
     }
-    state
-        .maintenance
-        .restoring
-        .store(true, std::sync::atomic::Ordering::SeqCst);
+    let _restore_guard = crate::maintenance::RestoreGuard(state.maintenance.clone());
 
     // 取消所有进行中问答
     state.chats.cancel_all().await;
@@ -1247,6 +1257,9 @@ pub async fn admin_restore(
             counts
         }
         Err(e) => {
+            if !crate::backup::restore_marker_path(&state.config.data_dir).exists() {
+                return Err(ApiError::bad_request(format!("恢复失败，原资料库已保留: {}", e)));
+            }
             state
                 .maintenance
                 .failed
@@ -1274,4 +1287,11 @@ pub async fn fallback_handler() -> Json<serde_json::Value> {
         "service": "campus-policy-agent-rust",
         "frontend": "尚未构建或处于开发模式"
     }))
+}
+
+fn multipart_error(error: axum::extract::multipart::MultipartError) -> ApiError {
+    let status = if error.status() == StatusCode::PAYLOAD_TOO_LARGE
+        || error.to_string().contains("超过上限") { StatusCode::PAYLOAD_TOO_LARGE }
+        else { StatusCode::BAD_REQUEST };
+    ApiError::new(status, "上传内容不完整、格式错误或超过请求体上限")
 }

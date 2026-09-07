@@ -112,8 +112,18 @@ pub fn parse_npy_header<R: Read + Seek>(reader: &mut R) -> Result<NpyHeader, Npy
     if shape.len() != 2 {
         return Err(NpyError::UnsupportedDimension(shape.len()));
     }
+    if shape[1] == 0 || shape[1] > 8192 {
+        return Err(NpyError::ParseError("向量维度必须为 1..8192".into()));
+    }
 
     let data_offset = reader.stream_position()?;
+    let expected = shape[0].checked_mul(shape[1]).and_then(|n| n.checked_mul(4))
+        .and_then(|n| data_offset.checked_add(n as u64))
+        .ok_or_else(|| NpyError::ParseError("矩阵大小溢出".into()))?;
+    if reader.seek(SeekFrom::End(0))? != expected {
+        return Err(NpyError::ParseError("向量文件长度与 shape 不一致".into()));
+    }
+    reader.seek(SeekFrom::Start(data_offset))?;
 
     Ok(NpyHeader {
         major,
@@ -123,6 +133,44 @@ pub fn parse_npy_header<R: Read + Seek>(reader: &mut R) -> Result<NpyHeader, Npy
         shape,
         data_offset,
     })
+}
+
+/// Both array layouts are validated in bounded row tiles, without loading the matrix.
+pub fn validate_npy_file(path: &Path) -> Result<NpyHeader, NpyError> {
+    let mut file = File::open(path)?;
+    let header = parse_npy_header(&mut file)?;
+    let (rows, dim) = (header.shape[0], header.shape[1]);
+    let tile_rows = (MAX_WORK_BUFFER_BYTES / (dim * 4 + 8)).max(1);
+    for start in (0..rows).step_by(tile_rows) {
+        let count = tile_rows.min(rows - start);
+        let mut norms = vec![0.0f64; count];
+        let mut bytes = vec![0u8; if header.fortran_order { count * 4 } else { count * dim * 4 }];
+        if header.fortran_order {
+            for col in 0..dim {
+                file.seek(SeekFrom::Start(header.data_offset + ((col * rows + start) * 4) as u64))?;
+                file.read_exact(&mut bytes)?;
+                for (row, cell) in bytes.chunks_exact(4).enumerate() {
+                    let v = f32::from_le_bytes(cell.try_into().unwrap());
+                    if !v.is_finite() { return Err(NpyError::NonFiniteValues); }
+                    norms[row] += (v as f64).powi(2);
+                }
+            }
+        } else {
+            file.seek(SeekFrom::Start(header.data_offset + (start * dim * 4) as u64))?;
+            file.read_exact(&mut bytes)?;
+            for (index, cell) in bytes.chunks_exact(4).enumerate() {
+                let v = f32::from_le_bytes(cell.try_into().unwrap());
+                if !v.is_finite() { return Err(NpyError::NonFiniteValues); }
+                norms[index / dim] += (v as f64).powi(2);
+            }
+        }
+        for (row, norm) in norms.into_iter().enumerate() {
+            if (norm.sqrt() - 1.0).abs() > 0.00101 {
+                return Err(NpyError::ZeroNormRow(start + row));
+            }
+        }
+    }
+    Ok(header)
 }
 
 fn parse_dict_field(header: &str, field: &str) -> Option<String> {

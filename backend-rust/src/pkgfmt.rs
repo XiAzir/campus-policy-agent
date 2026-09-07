@@ -1,6 +1,6 @@
 use crate::config::Config;
 use crate::storage::hash_file;
-use crate::vectors::parse_npy_header;
+use crate::vectors::validate_npy_file;
 use regex::Regex;
 use serde_json::Value;
 use std::collections::HashSet;
@@ -57,6 +57,7 @@ impl From<zip::result::ZipError> for PackageError {
 }
 
 pub struct ValidatedPackage {
+    _temp: tempfile::TempDir,
     pub manifest: Value,
     pub documents: Vec<Value>,
     pub root: PathBuf,
@@ -532,9 +533,34 @@ pub fn validate_package_archive(
     let tmp_dir = tempfile::Builder::new()
         .prefix("cpb-pkg-")
         .tempdir_in(parent)?;
-    let root = tmp_dir.keep();
-
-    archive.extract(&root)?;
+    let root = tmp_dir.path().to_path_buf();
+    let mut expected = HashSet::from(["manifest.json".to_string(), "vectors.npy".to_string()]);
+    for doc in &docs {
+        let h = doc["doc_hash"].as_str().unwrap();
+        let ext = Path::new(doc["original_filename"].as_str().unwrap())
+            .extension().and_then(|s| s.to_str()).unwrap_or("").to_lowercase();
+        expected.insert(if ext.is_empty() { format!("files/{h}") } else { format!("files/{h}.{ext}") });
+        expected.insert(format!("text/{h}.txt"));
+    }
+    if archive.file_names().map(str::to_owned).collect::<HashSet<_>>() != expected {
+        return Err(PackageError::SafetyViolation("ZIP 条目与清单不一致".into()));
+    }
+    crate::storage::require_space(parent, total_uncompressed)
+        .map_err(PackageError::SizeLimitExceeded)?;
+    let mut extracted = 0u64;
+    for name in expected {
+        let mut entry = archive.by_name(&name)?;
+        let limit = if name.starts_with("text/") { MAX_TEXT_BYTES } else { MAX_TOTAL_UNCOMPRESSED };
+        if entry.size() > limit { return Err(PackageError::SizeLimitExceeded(name)); }
+        let dest = root.join(&name);
+        std::fs::create_dir_all(dest.parent().unwrap())?;
+        let mut out = File::create(dest)?;
+        let written = std::io::copy(&mut (&mut entry).take(limit + 1), &mut out)?;
+        extracted = extracted.checked_add(written).ok_or_else(|| PackageError::SizeLimitExceeded("解压大小溢出".into()))?;
+        if written > limit || written != entry.size() || extracted > MAX_TOTAL_UNCOMPRESSED {
+            return Err(PackageError::SizeLimitExceeded("实际解压大小超限或不匹配".into()));
+        }
+    }
 
     // 校验向量文件
     let vec_path = root.join("vectors.npy");
@@ -544,8 +570,7 @@ pub fn validate_package_archive(
         ));
     }
 
-    let mut vfile = File::open(&vec_path)?;
-    let header = parse_npy_header(&mut vfile)
+    let header = validate_npy_file(&vec_path)
         .map_err(|e| PackageError::VectorValidationFailed(format!("NPY 解析失败: {}", e)))?;
 
     let expected_count = manifest["vectors"]["count"].as_u64().unwrap() as usize;
@@ -608,6 +633,7 @@ pub fn validate_package_archive(
     }
 
     Ok(ValidatedPackage {
+        _temp: tmp_dir,
         manifest,
         documents: docs,
         root,

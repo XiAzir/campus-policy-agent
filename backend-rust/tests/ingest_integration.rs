@@ -215,3 +215,28 @@ async fn test_ingest_bad_target_publish_rejected() {
     let err_msg = res.unwrap_err().to_string();
     assert!(err_msg.contains("替代目标不存在或不唯一"));
 }
+
+#[tokio::test]
+async fn publish_failure_keeps_draft_and_removes_new_files() {
+    let (db, config, _tmp) = setup_test_env("publish_rollback");
+    let pid = ingest::import_package(&db, &config, Path::new("tests/fixtures/packages/small_v1.zip"), "small.zip").await.unwrap();
+    db.write(|conn| conn.execute_batch("CREATE TRIGGER fail_publish BEFORE INSERT ON documents BEGIN SELECT RAISE(ABORT, 'injected'); END;")).await.unwrap();
+    assert!(ingest::publish_package(&db, &config, pid, HashMap::new()).await.is_err());
+    assert_eq!(db.get_counts().await.unwrap().documents, 0);
+    assert!(!config.data_dir.join("vectors/pkg-1.npy").exists());
+    assert_eq!(fs::read_dir(config.data_dir.join("vectors")).unwrap().count(), 1);
+    assert_eq!(fs::read_dir(config.data_dir.join("files")).unwrap().count(), 0);
+    assert_eq!(fs::read_dir(config.data_dir.join("text")).unwrap().count(), 0);
+    db.write(|conn| conn.execute_batch("DROP TRIGGER fail_publish")).await.unwrap();
+    ingest::publish_package(&db, &config, pid, HashMap::new()).await.unwrap();
+}
+
+#[tokio::test]
+async fn failed_import_rolls_back_files_and_database() {
+    let (db, config, _tmp) = setup_test_env("import_rollback");
+    db.write(|conn| conn.execute_batch("CREATE TRIGGER fail_import BEFORE INSERT ON audit_log BEGIN SELECT RAISE(ABORT, 'injected'); END;")).await.unwrap();
+    assert!(ingest::import_package(&db, &config, Path::new("tests/fixtures/packages/small_v1.zip"), "small.zip").await.is_err());
+    assert_eq!(db.get_counts().await.unwrap().packages, 0);
+    assert_eq!(fs::read_dir(config.data_dir.join("packages")).unwrap().count(), 0);
+    assert_eq!(fs::read_dir(config.data_dir.join("vectors")).unwrap().count(), 0);
+}

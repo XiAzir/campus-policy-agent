@@ -106,12 +106,11 @@ pub async fn import_package(
     let dest_zip = get_package_zip_path(config, &sha256);
     let draft_vec = vectors_dir.join(format!("pkg-draft-{}.npy", &sha256[..16]));
 
-    let tmp_zip = dest_zip.with_extension("tmp");
-    fs::copy(zip_path, &tmp_zip)?;
-    fs::rename(&tmp_zip, &dest_zip)?;
+    let mut staged = crate::storage::StagedFiles::default();
+    staged.copy(zip_path, &dest_zip)?;
 
     let root_vec = pkg.root.join("vectors.npy");
-    fs::copy(&root_vec, &draft_vec)?;
+    staged.copy(&root_vec, &draft_vec)?;
 
     let manifest = pkg.manifest;
     let prep_ver = manifest["preprocessing_version"]
@@ -126,6 +125,8 @@ pub async fn import_package(
     let sha_ins = sha256.clone();
     let pkg_id = db
         .write(move |conn| {
+            let tx = conn.transaction()?;
+            let conn = &tx;
             let now = utcnow();
             conn.execute(
                 "INSERT INTO packages(sha256, original_filename, size, imported_at, status, \
@@ -148,6 +149,8 @@ pub async fn import_package(
                 "INSERT INTO audit_log(at, actor, action, detail) VALUES(?, ?, ?, ?)",
                 params![now, "admin", "package_import", format!("package={}", id)],
             )?;
+            tx.commit()?;
+            staged.commit();
             Ok(id)
         })
         .await
@@ -610,14 +613,13 @@ pub async fn publish_package(
     let final_vec = vectors_dir.join(format!("pkg-{}.npy", package_id));
     let draft_vec = vectors_dir.join(format!("pkg-draft-{}.npy", &sha256[..16]));
 
+    let mut staged = crate::storage::StagedFiles::default();
     let root_files = checked.root.join("files");
     if root_files.exists() {
         for entry in fs::read_dir(root_files)? {
             let entry = entry?;
             let dest = files_dir.join(entry.file_name());
-            if !dest.exists() {
-                fs::copy(entry.path(), dest)?;
-            }
+            staged.copy(&entry.path(), &dest)?;
         }
     }
 
@@ -626,14 +628,11 @@ pub async fn publish_package(
         for entry in fs::read_dir(root_text)? {
             let entry = entry?;
             let dest = text_dir.join(entry.file_name());
-            if !dest.exists() {
-                fs::copy(entry.path(), dest)?;
-            }
+            staged.copy(&entry.path(), &dest)?;
         }
     }
 
-    fs::copy(checked.root.join("vectors.npy"), &final_vec)?;
-    let _ = fs::remove_file(&draft_vec);
+    staged.copy(&checked.root.join("vectors.npy"), &final_vec)?;
 
     // 事务写入数据库
     let docs = checked.documents.clone();
@@ -734,7 +733,7 @@ pub async fn publish_package(
                 for dom in domains {
                     let tag = dom["tag"].as_str().unwrap();
                     let sids = dom.get("section_ids").and_then(|s| s.as_array());
-                    if let Some(sids_arr) = sids {
+                    if let Some(sids_arr) = sids.filter(|ids| !ids.is_empty()) {
                         for sid in sids_arr {
                             tx.execute(
                                 "INSERT INTO doc_tags(doc_id, section_id, tag) VALUES(?, ?, ?)",
@@ -791,6 +790,8 @@ pub async fn publish_package(
         )?;
 
         tx.commit()?;
+        staged.commit();
+        let _ = fs::remove_file(&draft_vec);
         Ok(())
     })
     .await

@@ -3,6 +3,7 @@ use std::time::Duration;
 
 #[derive(Debug, Default)]
 pub struct MaintenanceState {
+    pub storage: std::sync::Arc<tokio::sync::Mutex<()>>,
     pub restoring: AtomicBool,
     pub failed: AtomicBool,
     pub active_requests: AtomicUsize,
@@ -11,6 +12,7 @@ pub struct MaintenanceState {
 impl MaintenanceState {
     pub fn new() -> Self {
         Self {
+            storage: Default::default(),
             restoring: AtomicBool::new(false),
             failed: AtomicBool::new(false),
             active_requests: AtomicUsize::new(0),
@@ -60,5 +62,17 @@ impl MaintenanceState {
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
         Ok(())
+    }
+}
+
+pub struct RequestGuard(pub std::sync::Arc<MaintenanceState>);
+impl Drop for RequestGuard {
+    fn drop(&mut self) { self.0.exit_request(); }
+}
+
+pub struct RestoreGuard(pub std::sync::Arc<MaintenanceState>);
+impl Drop for RestoreGuard {
+    fn drop(&mut self) {
+        if !self.0.is_failed() { self.0.restoring.store(false, Ordering::SeqCst); }
     }
 }

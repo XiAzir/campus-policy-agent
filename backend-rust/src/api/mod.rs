@@ -33,7 +33,7 @@ pub struct AppState {
 
 async fn maintenance_middleware(
     axum::extract::State(state): axum::extract::State<AppState>,
-    req: Request,
+    mut req: Request,
     next: Next,
 ) -> Response {
     if let Err(msg) = state.maintenance.enter_request() {
@@ -44,9 +44,56 @@ async fn maintenance_middleware(
             .into_response();
     }
 
-    let res = next.run(req).await;
-    state.maintenance.exit_request();
-    res
+    let guard = crate::maintenance::RequestGuard(state.maintenance.clone());
+    let path = req.uri().path();
+    let storage_operation = path.starts_with("/api/admin/packages")
+        || path.starts_with("/api/admin/documents")
+        || path == "/api/admin/backup" || path == "/api/admin/restore";
+    let limit = if path == "/api/admin/restore" { 10u64 * 1024 * 1024 * 1024 }
+        else if path == "/api/admin/packages" && req.method() == axum::http::Method::POST { 210 * 1024 * 1024 }
+        else { 256 * 1024 };
+    if req.headers().get("content-length").and_then(|h| h.to_str().ok())
+        .and_then(|s| s.parse::<u64>().ok()).is_some_and(|n| n > limit) {
+        return error::ApiError::payload_too_large("请求体超过上限").into_response();
+    }
+    use futures_util::StreamExt;
+    let body = std::mem::replace(req.body_mut(), axum::body::Body::empty());
+    let stream = futures_util::stream::try_unfold((body.into_data_stream(), 0u64), move |(mut stream, used)| async move {
+        match stream.next().await {
+            Some(chunk) => {
+                let chunk = chunk.map_err(std::io::Error::other)?;
+                let used = used.saturating_add(chunk.len() as u64);
+                if used > limit { return Err(std::io::Error::other("请求体超过上限")); }
+                Ok(Some((chunk, (stream, used))))
+            }
+            None => Ok(None),
+        }
+    });
+    *req.body_mut() = axum::body::Body::from_stream(stream);
+    let response = if storage_operation {
+        let Ok(permit) = state.maintenance.storage.clone().try_lock_owned() else {
+            return error::ApiError::conflict("已有存储操作正在进行").into_response();
+        };
+        let runtime = tokio::runtime::Handle::current();
+        // The worker owns both guards until work completes, even if the HTTP future is dropped.
+        return match tokio::task::spawn_blocking(move || runtime.block_on(async move {
+            let response = next.run(req).await;
+            guarded_response(response, (guard, permit))
+        })).await {
+            Ok(response) => response,
+            Err(_) => error::ApiError::internal("存储工作任务异常退出").into_response(),
+        };
+    } else { next.run(req).await };
+    guarded_response(response, guard)
+}
+
+fn guarded_response<G: Send + 'static>(response: Response, guard: G) -> Response {
+    use futures_util::StreamExt;
+    let (parts, body) = response.into_parts();
+    let stream = futures_util::stream::unfold((body.into_data_stream(), guard), |(mut stream, guard)| async move {
+        stream.next().await.map(|chunk| (chunk, (stream, guard)))
+    });
+    Response::from_parts(parts, axum::body::Body::from_stream(stream))
 }
 
 pub fn create_router(state: AppState) -> Router {
@@ -116,5 +163,5 @@ pub fn create_router(state: AppState) -> Router {
         router = router.fallback(handlers::fallback_handler);
     }
 
-    router.with_state(state)
+    router.layer(axum::extract::DefaultBodyLimit::disable()).with_state(state)
 }
