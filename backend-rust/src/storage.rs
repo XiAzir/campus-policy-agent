@@ -36,8 +36,7 @@ pub fn require_space(path: impl AsRef<Path>, needed: u64) -> Result<(), String> 
 pub fn disk_space(path: &Path) -> io::Result<(u64, u64)> {
     let p = path.canonicalize()?;
     let sys = sysinfo::Disks::new_with_refreshed_list();
-    sys
-        .iter()
+    sys.iter()
         .filter(|d| p.starts_with(d.mount_point()))
         .max_by_key(|d| d.mount_point().components().count())
         .map(|d| (d.available_space(), d.total_space()))
@@ -46,14 +45,21 @@ pub fn disk_space(path: &Path) -> io::Result<(u64, u64)> {
 
 pub fn directory_bytes(path: &Path) -> io::Result<u64> {
     fn visit(path: &Path, depth: usize) -> io::Result<u64> {
-        if depth > 32 { return Err(io::Error::other("数据目录层级超过上限")); }
+        if depth > 32 {
+            return Err(io::Error::other("数据目录层级超过上限"));
+        }
         let mut total = 0u64;
         for entry in std::fs::read_dir(path)? {
             let entry = entry?;
             let kind = entry.file_type()?;
             // Never follow links outside the data directory.
-            total = total.saturating_add(if kind.is_dir() { visit(&entry.path(), depth + 1)? }
-                else if kind.is_file() { entry.metadata()?.len() } else { 0 });
+            total = total.saturating_add(if kind.is_dir() {
+                visit(&entry.path(), depth + 1)?
+            } else if kind.is_file() {
+                entry.metadata()?.len()
+            } else {
+                0
+            });
         }
         Ok(total)
     }
@@ -65,9 +71,18 @@ pub fn cpu_seconds() -> Option<f64> {
     {
         static TICKS: std::sync::OnceLock<Option<f64>> = std::sync::OnceLock::new();
         let ticks = TICKS.get_or_init(|| {
-            let output = std::process::Command::new("getconf").arg("CLK_TCK").output().ok()?;
-            if !output.status.success() { return None; }
-            let value = String::from_utf8(output.stdout).ok()?.trim().parse::<f64>().ok()?;
+            let output = std::process::Command::new("getconf")
+                .arg("CLK_TCK")
+                .output()
+                .ok()?;
+            if !output.status.success() {
+                return None;
+            }
+            let value = String::from_utf8(output.stdout)
+                .ok()?
+                .trim()
+                .parse::<f64>()
+                .ok()?;
             (value > 0.0).then_some(value)
         });
         let stat = std::fs::read_to_string("/proc/self/stat").ok()?;
@@ -78,11 +93,15 @@ pub fn cpu_seconds() -> Option<f64> {
         Some((user + system) as f64 / (*ticks)?)
     }
     #[cfg(not(target_os = "linux"))]
-    { None }
+    {
+        None
+    }
 }
 
 #[derive(Default)]
-pub struct StagedFiles { paths: Vec<std::path::PathBuf> }
+pub struct StagedFiles {
+    paths: Vec<std::path::PathBuf>,
+}
 
 impl StagedFiles {
     pub fn copy(&mut self, source: &Path, dest: &Path) -> io::Result<()> {
@@ -92,16 +111,23 @@ impl StagedFiles {
             }
             return Ok(());
         }
-        let mut out = std::fs::OpenOptions::new().write(true).create_new(true).open(dest)?;
+        let mut out = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(dest)?;
         self.paths.push(dest.to_owned());
         io::copy(&mut File::open(source)?, &mut out)?;
         out.sync_all()
     }
-    pub fn commit(mut self) { self.paths.clear(); }
+    pub fn commit(mut self) {
+        self.paths.clear();
+    }
 }
 
 impl Drop for StagedFiles {
     fn drop(&mut self) {
-        for path in &self.paths { let _ = std::fs::remove_file(path); }
+        for path in &self.paths {
+            let _ = std::fs::remove_file(path);
+        }
     }
 }

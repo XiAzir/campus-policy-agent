@@ -45,35 +45,52 @@ async fn maintenance_middleware(
     }
 
     let guard = crate::maintenance::RequestGuard(state.maintenance.clone());
-    let path = req.uri().path().strip_prefix("/api").unwrap_or(req.uri().path());
+    let path = req
+        .uri()
+        .path()
+        .strip_prefix("/api")
+        .unwrap_or(req.uri().path());
     let storage_operation = path.starts_with("/admin/packages")
         || path.starts_with("/admin/documents")
-        || path == "/admin/backup" || path == "/admin/restore";
-    let limit = if path == "/admin/restore" { 10u64 * 1024 * 1024 * 1024 }
-        else if path == "/admin/packages" && req.method() == axum::http::Method::POST { 210 * 1024 * 1024 }
-        else { 256 * 1024 };
-    if req.headers().get("content-length").and_then(|h| h.to_str().ok())
-        .and_then(|s| s.parse::<u64>().ok()).is_some_and(|n| n > limit) {
+        || path == "/admin/backup"
+        || path == "/admin/restore";
+    let limit = if path == "/admin/restore" {
+        10u64 * 1024 * 1024 * 1024
+    } else if path == "/admin/packages" && req.method() == axum::http::Method::POST {
+        210 * 1024 * 1024
+    } else {
+        256 * 1024
+    };
+    if req
+        .headers()
+        .get("content-length")
+        .and_then(|h| h.to_str().ok())
+        .and_then(|s| s.parse::<u64>().ok())
+        .is_some_and(|n| n > limit)
+    {
         return error::ApiError::payload_too_large("请求体超过上限").into_response();
     }
     use futures_util::StreamExt;
     let exceeded = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let over_limit = exceeded.clone();
     let body = std::mem::replace(req.body_mut(), axum::body::Body::empty());
-    let stream = futures_util::stream::try_unfold((body.into_data_stream(), 0u64, over_limit), move |(mut stream, used, exceeded)| async move {
-        match stream.next().await {
-            Some(chunk) => {
-                let chunk = chunk.map_err(std::io::Error::other)?;
-                let used = used.saturating_add(chunk.len() as u64);
-                if used > limit {
-                    exceeded.store(true, std::sync::atomic::Ordering::Relaxed);
-                    return Err(std::io::Error::other("请求体超过上限"));
+    let stream = futures_util::stream::try_unfold(
+        (body.into_data_stream(), 0u64, over_limit),
+        move |(mut stream, used, exceeded)| async move {
+            match stream.next().await {
+                Some(chunk) => {
+                    let chunk = chunk.map_err(std::io::Error::other)?;
+                    let used = used.saturating_add(chunk.len() as u64);
+                    if used > limit {
+                        exceeded.store(true, std::sync::atomic::Ordering::Relaxed);
+                        return Err(std::io::Error::other("请求体超过上限"));
+                    }
+                    Ok(Some((chunk, (stream, used, exceeded))))
                 }
-                Ok(Some((chunk, (stream, used, exceeded))))
+                None => Ok(None),
             }
-            None => Ok(None),
-        }
-    });
+        },
+    );
     *req.body_mut() = axum::body::Body::from_stream(stream);
     let response = if storage_operation {
         let Ok(permit) = state.maintenance.storage.clone().try_lock_owned() else {
@@ -81,29 +98,38 @@ async fn maintenance_middleware(
         };
         let runtime = tokio::runtime::Handle::current();
         // The worker owns both guards until work completes, even if the HTTP future is dropped.
-        return match tokio::task::spawn_blocking(move || runtime.block_on(async move {
-            let response = next.run(req).await;
-            guarded_response(limit_response(response, &exceeded), (guard, permit))
-        })).await {
+        return match tokio::task::spawn_blocking(move || {
+            runtime.block_on(async move {
+                let response = next.run(req).await;
+                guarded_response(limit_response(response, &exceeded), (guard, permit))
+            })
+        })
+        .await
+        {
             Ok(response) => response,
             Err(_) => error::ApiError::internal("存储工作任务异常退出").into_response(),
         };
-    } else { next.run(req).await };
+    } else {
+        next.run(req).await
+    };
     guarded_response(limit_response(response, &exceeded), guard)
 }
 
 fn limit_response(response: Response, exceeded: &std::sync::atomic::AtomicBool) -> Response {
     if exceeded.load(std::sync::atomic::Ordering::Relaxed) {
         error::ApiError::payload_too_large("请求体超过上限").into_response()
-    } else { response }
+    } else {
+        response
+    }
 }
 
 fn guarded_response<G: Send + 'static>(response: Response, guard: G) -> Response {
     use futures_util::StreamExt;
     let (parts, body) = response.into_parts();
-    let stream = futures_util::stream::unfold((body.into_data_stream(), guard), |(mut stream, guard)| async move {
-        stream.next().await.map(|chunk| (chunk, (stream, guard)))
-    });
+    let stream = futures_util::stream::unfold(
+        (body.into_data_stream(), guard),
+        |(mut stream, guard)| async move { stream.next().await.map(|chunk| (chunk, (stream, guard))) },
+    );
     Response::from_parts(parts, axum::body::Body::from_stream(stream))
 }
 
@@ -174,5 +200,82 @@ pub fn create_router(state: AppState) -> Router {
         router = router.fallback(handlers::fallback_handler);
     }
 
-    router.layer(axum::extract::DefaultBodyLimit::disable()).with_state(state)
+    router
+        .layer(axum::extract::DefaultBodyLimit::disable())
+        .with_state(state)
+}
+
+#[cfg(test)]
+mod lifecycle_tests {
+    use super::*;
+    use tower::ServiceExt;
+
+    #[tokio::test]
+    async fn dropped_http_future_does_not_release_active_storage_worker() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut config = Config::from_env(None);
+        config.data_dir = temp.path().join("data");
+        let db = DbPool::new(&config.data_dir.join("campus.db"), 2, 64).unwrap();
+        let vectors = Arc::new(VectorIndex::new(config.data_dir.join("vectors")));
+        let maintenance = Arc::new(MaintenanceState::new());
+        let state = AppState {
+            agent: Arc::new(Agent::new(db.clone(), vectors.clone(), config.clone())),
+            config,
+            db,
+            vectors,
+            maintenance: maintenance.clone(),
+            tokens: Arc::new(RwLock::new(
+                TokenService::from_hex_secret(&"ab".repeat(32), 30).unwrap(),
+            )),
+            limiter: Arc::new(RateLimiter::new(100)),
+            chats: Arc::new(ChatManager::new(1, 10)),
+        };
+        let (started_tx, mut started_rx) = tokio::sync::mpsc::channel(1);
+        let release = Arc::new(tokio::sync::Semaphore::new(0));
+        let release_handler = release.clone();
+        let app = Router::new()
+            .route(
+                "/api/admin/packages",
+                post(move || {
+                    let started = started_tx.clone();
+                    let release = release_handler.clone();
+                    async move {
+                        started.send(()).await.unwrap();
+                        let _permit = release.acquire().await.unwrap();
+                        "done"
+                    }
+                }),
+            )
+            .route_layer(middleware::from_fn_with_state(
+                state,
+                maintenance_middleware,
+            ));
+        let request = || {
+            Request::builder()
+                .uri("/api/admin/packages")
+                .method("POST")
+                .body(axum::body::Body::empty())
+                .unwrap()
+        };
+        let first = tokio::spawn(app.clone().oneshot(request()));
+        started_rx.recv().await.unwrap();
+        first.abort();
+        let _ = first.await;
+        let conflict = app.oneshot(request()).await.unwrap();
+        assert_eq!(conflict.status(), StatusCode::CONFLICT);
+        assert!(maintenance.storage.try_lock().is_err());
+        release.add_permits(1);
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            while maintenance
+                .active_requests
+                .load(std::sync::atomic::Ordering::SeqCst)
+                != 0
+            {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        assert!(maintenance.storage.try_lock().is_ok());
+    }
 }

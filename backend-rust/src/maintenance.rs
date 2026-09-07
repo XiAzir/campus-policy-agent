@@ -67,13 +67,19 @@ impl MaintenanceState {
 
 pub struct RequestGuard(pub std::sync::Arc<MaintenanceState>);
 impl Drop for RequestGuard {
-    fn drop(&mut self) { self.0.exit_request(); }
+    fn drop(&mut self) {
+        self.0.exit_request();
+    }
 }
 
 pub struct RestoreGuard(pub std::sync::Arc<MaintenanceState>, pub std::path::PathBuf);
 impl Drop for RestoreGuard {
     fn drop(&mut self) {
-        if self.1.exists() { self.0.failed.store(true, Ordering::SeqCst); }
-        if !self.0.is_failed() { self.0.restoring.store(false, Ordering::SeqCst); }
+        if self.1.exists() {
+            self.0.failed.store(true, Ordering::SeqCst);
+        }
+        if !self.0.is_failed() {
+            self.0.restoring.store(false, Ordering::SeqCst);
+        }
     }
 }

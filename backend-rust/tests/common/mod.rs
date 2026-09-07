@@ -6,8 +6,11 @@ pub fn fixture_copy() -> tempfile::TempDir {
         for entry in std::fs::read_dir(source).unwrap() {
             let entry = entry.unwrap();
             let dest = target.join(entry.file_name());
-            if entry.file_type().unwrap().is_dir() { copy(&entry.path(), &dest); }
-            else { std::fs::copy(entry.path(), dest).unwrap(); }
+            if entry.file_type().unwrap().is_dir() {
+                copy(&entry.path(), &dest);
+            } else {
+                std::fs::copy(entry.path(), dest).unwrap();
+            }
         }
     }
     let temp = tempfile::tempdir().unwrap();

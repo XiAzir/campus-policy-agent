@@ -265,7 +265,8 @@ impl DbPool {
 
         for rtx in &self.reader_txs {
             let (tx, rx) = tokio::sync::oneshot::channel();
-            rtx.send(JobMessage::Close(tx)).map_err(|_| rusqlite::Error::InvalidQuery)?;
+            rtx.send(JobMessage::Close(tx))
+                .map_err(|_| rusqlite::Error::InvalidQuery)?;
             rx.await.map_err(|_| rusqlite::Error::InvalidQuery)??;
         }
         Ok(())

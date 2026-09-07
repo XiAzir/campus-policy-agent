@@ -356,7 +356,9 @@ pub fn validate_manifest(manifest: &Value) -> Result<Vec<Value>, PackageError> {
                     )));
                 }
                 if sec.get("title").and_then(Value::as_str).is_none() {
-                    return Err(PackageError::ManifestInvalid("章节 title 必须是字符串".into()));
+                    return Err(PackageError::ManifestInvalid(
+                        "章节 title 必须是字符串".into(),
+                    ));
                 }
                 let start_l = sec.get("start_line").and_then(|v| v.as_i64()).unwrap_or(0);
                 let end_l = sec.get("end_line").and_then(|v| v.as_i64()).unwrap_or(0);
@@ -370,14 +372,27 @@ pub fn validate_manifest(manifest: &Value) -> Result<Vec<Value>, PackageError> {
         }
 
         if let Some(domains) = doc.get("domains") {
-            let domains = domains.as_array().ok_or_else(|| PackageError::ManifestInvalid("domains 必须为数组".into()))?;
+            let domains = domains
+                .as_array()
+                .ok_or_else(|| PackageError::ManifestInvalid("domains 必须为数组".into()))?;
             for domain in domains {
-                if domain.get("tag").and_then(Value::as_str).is_none_or(|s| s.trim().is_empty()) {
-                    return Err(PackageError::ManifestInvalid("领域 tag 必须为非空字符串".into()));
+                if domain
+                    .get("tag")
+                    .and_then(Value::as_str)
+                    .is_none_or(|s| s.trim().is_empty())
+                {
+                    return Err(PackageError::ManifestInvalid(
+                        "领域 tag 必须为非空字符串".into(),
+                    ));
                 }
                 if let Some(ids) = domain.get("section_ids") {
-                    let ids = ids.as_array().ok_or_else(|| PackageError::ManifestInvalid("section_ids 必须为数组".into()))?;
-                    if ids.iter().any(|id| id.as_str().is_none_or(|s| !section_ids.contains(s))) {
+                    let ids = ids.as_array().ok_or_else(|| {
+                        PackageError::ManifestInvalid("section_ids 必须为数组".into())
+                    })?;
+                    if ids
+                        .iter()
+                        .any(|id| id.as_str().is_none_or(|s| !section_ids.contains(s)))
+                    {
                         return Err(PackageError::ManifestInvalid("领域引用不存在的章节".into()));
                     }
                 }
@@ -556,11 +571,23 @@ pub fn validate_package_archive(
     for doc in &docs {
         let h = doc["doc_hash"].as_str().unwrap();
         let ext = Path::new(doc["original_filename"].as_str().unwrap())
-            .extension().and_then(|s| s.to_str()).unwrap_or("").to_lowercase();
-        expected.insert(if ext.is_empty() { format!("files/{h}") } else { format!("files/{h}.{ext}") });
+            .extension()
+            .and_then(|s| s.to_str())
+            .unwrap_or("")
+            .to_lowercase();
+        expected.insert(if ext.is_empty() {
+            format!("files/{h}")
+        } else {
+            format!("files/{h}.{ext}")
+        });
         expected.insert(format!("text/{h}.txt"));
     }
-    if archive.file_names().map(str::to_owned).collect::<HashSet<_>>() != expected {
+    if archive
+        .file_names()
+        .map(str::to_owned)
+        .collect::<HashSet<_>>()
+        != expected
+    {
         return Err(PackageError::SafetyViolation("ZIP 条目与清单不一致".into()));
     }
     crate::storage::require_space(parent, total_uncompressed)
@@ -568,15 +595,25 @@ pub fn validate_package_archive(
     let mut extracted = 0u64;
     for name in expected {
         let mut entry = archive.by_name(&name)?;
-        let limit = if name.starts_with("text/") { MAX_TEXT_BYTES } else { MAX_TOTAL_UNCOMPRESSED };
-        if entry.size() > limit { return Err(PackageError::SizeLimitExceeded(name)); }
+        let limit = if name.starts_with("text/") {
+            MAX_TEXT_BYTES
+        } else {
+            MAX_TOTAL_UNCOMPRESSED
+        };
+        if entry.size() > limit {
+            return Err(PackageError::SizeLimitExceeded(name));
+        }
         let dest = root.join(&name);
         std::fs::create_dir_all(dest.parent().unwrap())?;
         let mut out = File::create(dest)?;
         let written = std::io::copy(&mut (&mut entry).take(limit + 1), &mut out)?;
-        extracted = extracted.checked_add(written).ok_or_else(|| PackageError::SizeLimitExceeded("解压大小溢出".into()))?;
+        extracted = extracted
+            .checked_add(written)
+            .ok_or_else(|| PackageError::SizeLimitExceeded("解压大小溢出".into()))?;
         if written > limit || written != entry.size() || extracted > MAX_TOTAL_UNCOMPRESSED {
-            return Err(PackageError::SizeLimitExceeded("实际解压大小超限或不匹配".into()));
+            return Err(PackageError::SizeLimitExceeded(
+                "实际解压大小超限或不匹配".into(),
+            ));
         }
     }
 

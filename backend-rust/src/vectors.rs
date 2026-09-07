@@ -117,7 +117,9 @@ pub fn parse_npy_header<R: Read + Seek>(reader: &mut R) -> Result<NpyHeader, Npy
     }
 
     let data_offset = reader.stream_position()?;
-    let expected = shape[0].checked_mul(shape[1]).and_then(|n| n.checked_mul(4))
+    let expected = shape[0]
+        .checked_mul(shape[1])
+        .and_then(|n| n.checked_mul(4))
         .and_then(|n| data_offset.checked_add(n as u64))
         .ok_or_else(|| NpyError::ParseError("矩阵大小溢出".into()))?;
     if reader.seek(SeekFrom::End(0))? != expected {
@@ -144,23 +146,38 @@ pub fn validate_npy_file(path: &Path) -> Result<NpyHeader, NpyError> {
     for start in (0..rows).step_by(tile_rows) {
         let count = tile_rows.min(rows - start);
         let mut norms = vec![0.0f64; count];
-        let mut bytes = vec![0u8; if header.fortran_order { count * 4 } else { count * dim * 4 }];
+        let mut bytes = vec![
+            0u8;
+            if header.fortran_order {
+                count * 4
+            } else {
+                count * dim * 4
+            }
+        ];
         if header.fortran_order {
             for col in 0..dim {
-                file.seek(SeekFrom::Start(header.data_offset + ((col * rows + start) * 4) as u64))?;
+                file.seek(SeekFrom::Start(
+                    header.data_offset + ((col * rows + start) * 4) as u64,
+                ))?;
                 file.read_exact(&mut bytes)?;
-                for (row, cell) in bytes.chunks_exact(4).enumerate() {
-                    let v = f32::from_le_bytes(cell.try_into().unwrap());
-                    if !v.is_finite() { return Err(NpyError::NonFiniteValues); }
+                for (row, cell) in bytes.as_chunks::<4>().0.iter().enumerate() {
+                    let v = f32::from_le_bytes(*cell);
+                    if !v.is_finite() {
+                        return Err(NpyError::NonFiniteValues);
+                    }
                     norms[row] += (v as f64).powi(2);
                 }
             }
         } else {
-            file.seek(SeekFrom::Start(header.data_offset + (start * dim * 4) as u64))?;
+            file.seek(SeekFrom::Start(
+                header.data_offset + (start * dim * 4) as u64,
+            ))?;
             file.read_exact(&mut bytes)?;
-            for (index, cell) in bytes.chunks_exact(4).enumerate() {
-                let v = f32::from_le_bytes(cell.try_into().unwrap());
-                if !v.is_finite() { return Err(NpyError::NonFiniteValues); }
+            for (index, cell) in bytes.as_chunks::<4>().0.iter().enumerate() {
+                let v = f32::from_le_bytes(*cell);
+                if !v.is_finite() {
+                    return Err(NpyError::NonFiniteValues);
+                }
                 norms[index / dim] += (v as f64).powi(2);
             }
         }
@@ -399,6 +416,28 @@ mod tests {
     use super::*;
     use serde_json::Value;
     use std::fs;
+
+    #[test]
+    fn validates_values_layout_and_exact_length() {
+        for name in ["vectors_dim8_c.npy", "vectors_dim8_fortran.npy"] {
+            let source = Path::new("tests/fixtures/retrieval").join(name);
+            assert!(validate_npy_file(&source).is_ok());
+            let tmp = tempfile::tempdir().unwrap();
+            let path = tmp.path().join("bad.npy");
+            let bytes = fs::read(source).unwrap();
+            fs::write(&path, &bytes[..bytes.len() - 1]).unwrap();
+            assert!(validate_npy_file(&path).is_err());
+            let mut bad = bytes.clone();
+            let header = parse_npy_header(&mut std::io::Cursor::new(&bytes)).unwrap();
+            let offset = header.data_offset as usize;
+            bad[offset..offset + 4].copy_from_slice(&f32::NAN.to_le_bytes());
+            fs::write(&path, &bad).unwrap();
+            assert!(validate_npy_file(&path).is_err());
+            bad[offset..].fill(0);
+            fs::write(&path, &bad).unwrap();
+            assert!(validate_npy_file(&path).is_err());
+        }
+    }
 
     #[test]
     fn test_parse_golden_npy_c_and_fortran() {

@@ -6,7 +6,9 @@ fn incomplete_restore_never_creates_database() {
     let data = temp.path().join("data");
     std::fs::write(temp.path().join("data.restore-in-progress"), "incomplete").unwrap();
     let output = Command::new(env!("CARGO_BIN_EXE_campus_policy_backend"))
-        .env("DATA_DIR", &data).output().unwrap();
+        .env("DATA_DIR", &data)
+        .output()
+        .unwrap();
     assert!(!output.status.success());
     assert!(!data.join("campus.db").exists());
 }

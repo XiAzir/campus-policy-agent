@@ -13,8 +13,8 @@ pub mod metrics;
 pub mod pkgfmt;
 pub mod retrieval;
 pub mod storage;
-pub mod tokenizer;
-pub mod vectors;
 #[cfg(test)]
 #[path = "../tests/common/mod.rs"]
 mod test_fixtures;
+pub mod tokenizer;
+pub mod vectors;

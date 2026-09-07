@@ -645,8 +645,10 @@ pub async fn install_backup(
     // 2. 写入恢复中标记文件
     use std::io::Write;
     let mut marker_file = File::create(&marker)?;
-    marker_file.write_all(b"Restore incomplete. Inspect rollback directories before restarting.\n")?;
+    marker_file
+        .write_all(b"Restore incomplete. Inspect rollback directories before restarting.\n")?;
     marker_file.sync_all()?;
+    sync_directory(parent)?;
 
     // 3. 关闭当前数据库连接
     db.close().await?;
@@ -659,18 +661,23 @@ pub async fn install_backup(
         if current.exists() {
             std::fs::rename(&current, &previous)?;
             moved_old = true;
+            sync_directory(parent)?;
         }
 
         // 将解压验证后的新目录移动到当前位置
         std::fs::rename(unpacked_root, &current)?;
         installed = true;
+        sync_directory(parent)?;
 
         Ok(())
     })();
 
     if let Err(err) = install_result {
         // 尝试自动回滚
-        rollback_install(db, &current, &previous, &failed, &marker, moved_old, installed).await?;
+        rollback_install(
+            db, &current, &previous, &failed, &marker, moved_old, installed,
+        )
+        .await?;
         return Err(err);
     }
 
@@ -678,7 +685,10 @@ pub async fn install_backup(
     let reopen_res = db.reopen(None).await;
     if let Err(e) = reopen_res {
         // 重开失败，尝试回退
-        rollback_install(db, &current, &previous, &failed, &marker, moved_old, installed).await?;
+        rollback_install(
+            db, &current, &previous, &failed, &marker, moved_old, installed,
+        )
+        .await?;
         return Err(BackupError::Validation(format!(
             "恢复后重新打开数据库失败: {}",
             e
@@ -694,7 +704,10 @@ pub async fn install_backup(
         .await;
 
     if let Err(e) = verify_query {
-        rollback_install(db, &current, &previous, &failed, &marker, moved_old, installed).await?;
+        rollback_install(
+            db, &current, &previous, &failed, &marker, moved_old, installed,
+        )
+        .await?;
         return Err(BackupError::Validation(format!(
             "恢复后验证查询失败: {}",
             e
@@ -703,6 +716,7 @@ pub async fn install_backup(
 
     // 4. 成功后清除标记与旧目录
     std::fs::remove_file(&marker)?;
+    sync_directory(parent)?;
     if previous.exists() {
         let _ = std::fs::remove_dir_all(&previous);
     }
@@ -714,21 +728,106 @@ pub async fn install_backup(
 }
 
 async fn rollback_install(
-    db: &DbPool, current: &Path, previous: &Path, failed: &Path,
-    marker: &Path, moved_old: bool, installed: bool,
+    db: &DbPool,
+    current: &Path,
+    previous: &Path,
+    failed: &Path,
+    marker: &Path,
+    moved_old: bool,
+    installed: bool,
 ) -> Result<(), BackupError> {
     let result = async {
         db.close().await?;
-        if installed { std::fs::rename(current, failed)?; }
-        if moved_old { std::fs::rename(previous, current)?; }
+        if installed {
+            std::fs::rename(current, failed)?;
+        }
+        if moved_old {
+            std::fs::rename(previous, current)?;
+        }
         // Never create a new empty database while attempting recovery.
         if !current.join("campus.db").is_file() {
             return Err(BackupError::Validation("原数据库缺失".into()));
         }
         db.reopen(None).await?;
-        db.read(|conn| conn.query_row("SELECT COUNT(*) FROM documents", [], |r| r.get::<_, i64>(0))).await?;
+        db.read(|conn| {
+            conn.query_row("SELECT COUNT(*) FROM documents", [], |r| r.get::<_, i64>(0))
+        })
+        .await?;
         std::fs::remove_file(marker)?;
+        sync_directory(current.parent().unwrap_or_else(|| Path::new(".")))?;
         Ok::<(), BackupError>(())
-    }.await;
+    }
+    .await;
     result.map_err(|_| BackupError::Rollback("回滚未能完整验证，已保留恢复标记和目录".into()))
+}
+
+fn sync_directory(path: &Path) -> std::io::Result<()> {
+    #[cfg(unix)]
+    {
+        File::open(path)?.sync_all()
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = path;
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod recovery_regressions {
+    use super::*;
+
+    #[tokio::test]
+    async fn failed_rollback_preserves_marker_and_does_not_create_database() {
+        let tmp = tempfile::tempdir().unwrap();
+        let current = tmp.path().join("data");
+        let db = DbPool::new(&current.join("campus.db"), 2, 64).unwrap();
+        let marker = restore_marker_path(&current);
+        std::fs::write(&marker, b"incomplete").unwrap();
+        db.close().await.unwrap();
+        std::fs::rename(&current, tmp.path().join("original-preserved")).unwrap();
+        let result = rollback_install(
+            &db,
+            &current,
+            &tmp.path().join("missing"),
+            &tmp.path().join("failed"),
+            &marker,
+            true,
+            false,
+        )
+        .await;
+        assert!(matches!(result, Err(BackupError::Rollback(_))));
+        assert!(marker.exists());
+        assert!(!current.exists());
+        assert!(tmp.path().join("original-preserved/campus.db").exists());
+    }
+
+    #[tokio::test]
+    async fn invalid_installed_database_rolls_back_to_queryable_original() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut config = Config::from_env(None);
+        config.data_dir = tmp.path().join("data");
+        let db = DbPool::new(&config.data_dir.join("campus.db"), 2, 64).unwrap();
+        db.setting_set("sentinel".into(), "original".into())
+            .await
+            .unwrap();
+        let unpacked = tmp.path().join("unpacked");
+        std::fs::create_dir(&unpacked).unwrap();
+        std::fs::write(unpacked.join("db.sqlite"), b"not a database").unwrap();
+        let meta: BackupMeta = serde_json::from_value(serde_json::json!({
+            "format":BACKUP_FORMAT, "version":BACKUP_VERSION, "created_at":"test",
+            "counts":{"documents":0,"chunks":0}, "files":{}
+        }))
+        .unwrap();
+        assert!(
+            install_backup(&db, &config, &unpacked, &meta, || {})
+                .await
+                .is_err()
+        );
+        assert!(!restore_marker_path(&config.data_dir).exists());
+        assert_eq!(
+            db.setting_get("sentinel".into()).await.unwrap().as_deref(),
+            Some("original")
+        );
+    }
 }

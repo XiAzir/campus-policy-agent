@@ -53,8 +53,11 @@ fn require_admin(headers: &HeaderMap, state: &AppState) -> ApiResult<String> {
         .ok_or_else(|| ApiError::unauthorized("管理员登录已失效"))
 }
 
-fn get_client_ip(peer: Option<axum::Extension<axum::extract::ConnectInfo<std::net::SocketAddr>>>) -> String {
-    peer.map(|p| p.0.0.ip().to_string()).unwrap_or_else(|| "unknown-peer".into())
+fn get_client_ip(
+    peer: Option<axum::Extension<axum::extract::ConnectInfo<std::net::SocketAddr>>>,
+) -> String {
+    peer.map(|p| p.0.0.ip().to_string())
+        .unwrap_or_else(|| "unknown-peer".into())
 }
 
 // ---------------- 路由 Handlers ----------------
@@ -139,7 +142,9 @@ pub async fn admin_login(
         .await
         .map_err(|e| ApiError::internal(e.to_string()))?;
 
-    if !password_job(move || verify_password(&body.password, stored.as_deref().unwrap_or(""))).await? {
+    if !password_job(move || verify_password(&body.password, stored.as_deref().unwrap_or("")))
+        .await?
+    {
         let _ = state
             .db
             .audit(
@@ -186,7 +191,9 @@ pub async fn admin_password(
         .map_err(|e| ApiError::internal(e.to_string()))?;
 
     let old_password = body.old_password.clone();
-    if !password_job(move || verify_password(&old_password, stored.as_deref().unwrap_or(""))).await? {
+    if !password_job(move || verify_password(&old_password, stored.as_deref().unwrap_or("")))
+        .await?
+    {
         return Err(ApiError::unauthorized("当前密码不正确"));
     }
 
@@ -320,12 +327,16 @@ pub async fn source_file(
         return Err(ApiError::not_found("原文件缺失"));
     }
 
-    let file = tokio::fs::File::open(&file_path).await.map_err(|_| ApiError::internal("读取原文件失败"))?;
+    let file = tokio::fs::File::open(&file_path)
+        .await
+        .map_err(|_| ApiError::internal("读取原文件失败"))?;
     let stream = futures_util::stream::try_unfold(file, |mut file| async move {
         use tokio::io::AsyncReadExt;
         let mut bytes = vec![0u8; 64 * 1024];
         let count = file.read(&mut bytes).await?;
-        if count == 0 { return Ok::<_, std::io::Error>(None); }
+        if count == 0 {
+            return Ok::<_, std::io::Error>(None);
+        }
         bytes.truncate(count);
         Ok(Some((bytes, file)))
     });
@@ -530,8 +541,7 @@ pub async fn chat(
     let agent_clone = Arc::clone(&state.agent);
     let question = body.question;
 
-    let runner = move |_job: Arc<crate::chat::ChatJob>,
-                       tx: crate::chat::EventSender| {
+    let runner = move |_job: Arc<crate::chat::ChatJob>, tx: crate::chat::EventSender| {
         let agent = agent_clone;
         async move {
             let metrics = TurnMetrics::new();
@@ -589,14 +599,16 @@ pub async fn chat(
         .await
         .map_err(|e| ApiError::rate_limited(e.to_string()))?;
 
-    let stream = rx.take_while(|val| val.get("event").and_then(|v| v.as_str()) != Some("__end__")).filter_map(|val| {
-        if val.get("event").and_then(|v| v.as_str()) == Some("__end__") {
-            None
-        } else {
-            let json_str = serde_json::to_string(&val).unwrap_or_default();
-            Some(Ok::<_, Infallible>(Event::default().data(json_str)))
-        }
-    });
+    let stream = rx
+        .take_while(|val| val.get("event").and_then(|v| v.as_str()) != Some("__end__"))
+        .filter_map(|val| {
+            if val.get("event").and_then(|v| v.as_str()) == Some("__end__") {
+                None
+            } else {
+                let json_str = serde_json::to_string(&val).unwrap_or_default();
+                Some(Ok::<_, Infallible>(Event::default().data(json_str)))
+            }
+        });
 
     let sse = Sse::new(stream).keep_alive(
         KeepAlive::new()
@@ -715,8 +727,12 @@ pub async fn admin_status(
 
     let data_dir = state.config.data_dir.clone();
     let (data_bytes, (free_bytes, total_bytes)) = diagnostic_job(move || {
-        Ok((crate::storage::directory_bytes(&data_dir)?, crate::storage::disk_space(&data_dir)?))
-    }).await?;
+        Ok((
+            crate::storage::directory_bytes(&data_dir)?,
+            crate::storage::disk_space(&data_dir)?,
+        ))
+    })
+    .await?;
     let free_gb = (free_bytes as f64) / 1_000_000_000.0;
     let total_gb = (total_bytes as f64) / 1_000_000_000.0;
     let used_gb = (total_gb - free_gb).max(0.0);
@@ -763,8 +779,13 @@ pub async fn admin_metrics(
         let pid = Pid::from_u32(std::process::id());
         sys.refresh_processes(ProcessesToUpdate::Some(&[pid]), true);
         let rss = sys.process(pid).map(|p| p.memory());
-        Ok((rss, crate::storage::cpu_seconds(), crate::storage::disk_space(&data_dir)?.0))
-    }).await?;
+        Ok((
+            rss,
+            crate::storage::cpu_seconds(),
+            crate::storage::disk_space(&data_dir)?.0,
+        ))
+    })
+    .await?;
 
     let (running, waiting) = state.chats.counts().await;
 
@@ -856,8 +877,11 @@ pub async fn admin_package_upload(
         .data_dir
         .parent()
         .unwrap_or(&state.config.data_dir);
-    let tmp_upload = tempfile::Builder::new().prefix("cpb-upload-").suffix(".zip")
-        .tempfile_in(parent).map_err(|e| ApiError::internal(e.to_string()))?;
+    let tmp_upload = tempfile::Builder::new()
+        .prefix("cpb-upload-")
+        .suffix(".zip")
+        .tempfile_in(parent)
+        .map_err(|e| ApiError::internal(e.to_string()))?;
     let tmp_zip = tmp_upload.path().to_path_buf();
 
     let mut total_bytes = 0u64;
@@ -867,7 +891,9 @@ pub async fn admin_package_upload(
     while let Some(mut field) = multipart.next_field().await.map_err(multipart_error)? {
         let name = field.name().unwrap_or("").to_string();
         if name == "file" {
-            if file_saved { return Err(ApiError::bad_request("只能上传一个文件")); }
+            if file_saved {
+                return Err(ApiError::bad_request("只能上传一个文件"));
+            }
             if let Some(fname) = field.file_name() {
                 original_filename = fname.to_string();
             }
@@ -886,7 +912,8 @@ pub async fn admin_package_upload(
                         ),
                     ));
                 }
-                crate::storage::require_space(parent, chunk.len() as u64).map_err(ApiError::bad_request)?;
+                crate::storage::require_space(parent, chunk.len() as u64)
+                    .map_err(ApiError::bad_request)?;
                 std::io::Write::write_all(&mut out_file, &chunk)
                     .map_err(|e| ApiError::internal(e.to_string()))?;
             }
@@ -1046,13 +1073,16 @@ pub async fn admin_backup(
         )
         .await;
 
-    let file = tokio::fs::File::open(&out_path).await
+    let file = tokio::fs::File::open(&out_path)
+        .await
         .map_err(|e| ApiError::internal(format!("读取备份结果失败: {}", e)))?;
     let stream = futures_util::stream::try_unfold((file, tmp_zip), |(mut file, temp)| async move {
         use tokio::io::AsyncReadExt;
         let mut bytes = vec![0u8; 64 * 1024];
         let count = file.read(&mut bytes).await?;
-        if count == 0 { return Ok::<_, std::io::Error>(None); }
+        if count == 0 {
+            return Ok::<_, std::io::Error>(None);
+        }
         bytes.truncate(count);
         Ok(Some((bytes, (file, temp))))
     });
@@ -1094,25 +1124,20 @@ pub async fn admin_restore(
     let mut found_file = false;
     let mut total_bytes = 0u64;
 
-    while let Some(mut field) = multipart
-        .next_field()
-        .await
-        .map_err(multipart_error)?
-    {
+    while let Some(mut field) = multipart.next_field().await.map_err(multipart_error)? {
         if field.name() == Some("file") {
-            if found_file { return Err(ApiError::bad_request("只能上传一个文件")); }
+            if found_file {
+                return Err(ApiError::bad_request("只能上传一个文件"));
+            }
             let mut out = File::create(&upload_path)
                 .map_err(|e| ApiError::internal(format!("写入上传文件失败: {}", e)))?;
-            while let Some(chunk) = field
-                .chunk()
-                .await
-                .map_err(multipart_error)?
-            {
+            while let Some(chunk) = field.chunk().await.map_err(multipart_error)? {
                 total_bytes += chunk.len() as u64;
                 if total_bytes > crate::backup::MAX_EXPANDED {
                     return Err(ApiError::payload_too_large("备份上传大小超限"));
                 }
-                crate::storage::require_space(parent, chunk.len() as u64).map_err(ApiError::bad_request)?;
+                crate::storage::require_space(parent, chunk.len() as u64)
+                    .map_err(ApiError::bad_request)?;
                 out.write_all(&chunk)
                     .map_err(|e| ApiError::internal(format!("写入分块失败: {}", e)))?;
             }
@@ -1180,12 +1205,23 @@ pub async fn admin_restore(
         .map_err(|e| ApiError::bad_request(e.to_string()))?;
 
     // 3. 进入维护模式
-    if state.maintenance.restoring.compare_exchange(false, true, std::sync::atomic::Ordering::SeqCst,
-        std::sync::atomic::Ordering::SeqCst).is_err() {
+    if state
+        .maintenance
+        .restoring
+        .compare_exchange(
+            false,
+            true,
+            std::sync::atomic::Ordering::SeqCst,
+            std::sync::atomic::Ordering::SeqCst,
+        )
+        .is_err()
+    {
         return Err(ApiError::conflict("已有恢复任务正在进行"));
     }
-    let _restore_guard = crate::maintenance::RestoreGuard(state.maintenance.clone(),
-        crate::backup::restore_marker_path(&state.config.data_dir));
+    let _restore_guard = crate::maintenance::RestoreGuard(
+        state.maintenance.clone(),
+        crate::backup::restore_marker_path(&state.config.data_dir),
+    );
 
     // 取消所有进行中问答
     state.chats.cancel_all().await;
@@ -1232,7 +1268,10 @@ pub async fn admin_restore(
         }
         Err(e) => {
             if !crate::backup::restore_marker_path(&state.config.data_dir).exists() {
-                return Err(ApiError::bad_request(format!("恢复失败，原资料库已保留: {}", e)));
+                return Err(ApiError::bad_request(format!(
+                    "恢复失败，原资料库已保留: {}",
+                    e
+                )));
             }
             state
                 .maintenance
@@ -1265,24 +1304,46 @@ pub async fn fallback_handler() -> Json<serde_json::Value> {
 
 fn multipart_error(error: axum::extract::multipart::MultipartError) -> ApiError {
     let status = if error.status() == StatusCode::PAYLOAD_TOO_LARGE
-        || error.to_string().contains("超过上限") { StatusCode::PAYLOAD_TOO_LARGE }
-        else { StatusCode::BAD_REQUEST };
+        || error.to_string().contains("超过上限")
+    {
+        StatusCode::PAYLOAD_TOO_LARGE
+    } else {
+        StatusCode::BAD_REQUEST
+    };
     ApiError::new(status, "上传内容不完整、格式错误或超过请求体上限")
 }
 
-async fn diagnostic_job<T: Send + 'static>(work: impl FnOnce() -> std::io::Result<T> + Send + 'static) -> ApiResult<T> {
+async fn diagnostic_job<T: Send + 'static>(
+    work: impl FnOnce() -> std::io::Result<T> + Send + 'static,
+) -> ApiResult<T> {
     static SLOTS: std::sync::OnceLock<Arc<tokio::sync::Semaphore>> = std::sync::OnceLock::new();
-    let permit = SLOTS.get_or_init(|| Arc::new(tokio::sync::Semaphore::new(1))).clone()
-        .try_acquire_owned().map_err(|_| ApiError::service_unavailable("指标采样忙，请稍后重试"))?;
-    tokio::task::spawn_blocking(move || { let _permit = permit; work() }).await
-        .map_err(|_| ApiError::internal("指标采样任务失败"))?
-        .map_err(|_| ApiError::service_unavailable("无法读取系统或数据盘指标"))
+    let permit = SLOTS
+        .get_or_init(|| Arc::new(tokio::sync::Semaphore::new(1)))
+        .clone()
+        .try_acquire_owned()
+        .map_err(|_| ApiError::service_unavailable("指标采样忙，请稍后重试"))?;
+    tokio::task::spawn_blocking(move || {
+        let _permit = permit;
+        work()
+    })
+    .await
+    .map_err(|_| ApiError::internal("指标采样任务失败"))?
+    .map_err(|_| ApiError::service_unavailable("无法读取系统或数据盘指标"))
 }
 
-async fn password_job<T: Send + 'static>(work: impl FnOnce() -> T + Send + 'static) -> ApiResult<T> {
+async fn password_job<T: Send + 'static>(
+    work: impl FnOnce() -> T + Send + 'static,
+) -> ApiResult<T> {
     static SLOTS: std::sync::OnceLock<Arc<tokio::sync::Semaphore>> = std::sync::OnceLock::new();
-    let permit = SLOTS.get_or_init(|| Arc::new(tokio::sync::Semaphore::new(2))).clone()
-        .try_acquire_owned().map_err(|_| ApiError::rate_limited("密码服务忙，请稍后重试"))?;
-    tokio::task::spawn_blocking(move || { let _permit = permit; work() }).await
-        .map_err(|_| ApiError::internal("密码服务失败"))
+    let permit = SLOTS
+        .get_or_init(|| Arc::new(tokio::sync::Semaphore::new(2)))
+        .clone()
+        .try_acquire_owned()
+        .map_err(|_| ApiError::rate_limited("密码服务忙，请稍后重试"))?;
+    tokio::task::spawn_blocking(move || {
+        let _permit = permit;
+        work()
+    })
+    .await
+    .map_err(|_| ApiError::internal("密码服务失败"))
 }

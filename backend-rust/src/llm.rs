@@ -135,23 +135,33 @@ impl GeminiClient {
         while let Some(chunk_res) = byte_stream.next().await {
             let chunk = chunk_res.map_err(|e| LlmError::Unreachable(e.to_string()))?;
             total_bytes = total_bytes.saturating_add(chunk.len());
-            if total_bytes > 8 * 1024 * 1024 { return Err(LlmError::InvalidResponse("模型流超过 8 MiB".into())); }
+            if total_bytes > 8 * 1024 * 1024 {
+                return Err(LlmError::InvalidResponse("模型流超过 8 MiB".into()));
+            }
             buffer.extend_from_slice(&chunk);
 
             while let Some(idx) = buffer.iter().position(|b| *b == b'\n') {
-                if idx > 1024 * 1024 { return Err(LlmError::InvalidResponse("SSE 事件超过 1 MiB".into())); }
+                if idx > 1024 * 1024 {
+                    return Err(LlmError::InvalidResponse("SSE 事件超过 1 MiB".into()));
+                }
                 let line = String::from_utf8(buffer.drain(..=idx).collect())
                     .map_err(|_| LlmError::InvalidResponse("SSE 包含非法 UTF-8".into()))?;
                 let trimmed = line.trim_end_matches(['\r', '\n']);
                 if let Some(data) = trimmed.strip_prefix("data:") {
                     event_data.push_str(data.strip_prefix(' ').unwrap_or(data));
                     event_data.push('\n');
-                    if event_data.len() > 1024 * 1024 { return Err(LlmError::InvalidResponse("SSE 事件超过 1 MiB".into())); }
+                    if event_data.len() > 1024 * 1024 {
+                        return Err(LlmError::InvalidResponse("SSE 事件超过 1 MiB".into()));
+                    }
                     continue;
                 }
-                if !trimmed.is_empty() || event_data.is_empty() { continue; }
+                if !trimmed.is_empty() || event_data.is_empty() {
+                    continue;
+                }
                 let data = std::mem::take(&mut event_data);
-                if data.trim() == "[DONE]" { continue; }
+                if data.trim() == "[DONE]" {
+                    continue;
+                }
                 let json_obj = serde_json::from_str::<Value>(&data)
                     .map_err(|_| LlmError::InvalidResponse("SSE data 不是有效 JSON".into()))?;
 
@@ -175,13 +185,20 @@ impl GeminiClient {
                                 let text_opt = p.get("text").and_then(|t| t.as_str());
                                 if let (false, Some(txt)) = (is_thought, text_opt) {
                                     answer_bytes = answer_bytes.saturating_add(txt.len());
-                                    if answer_bytes > 256 * 1024 { return Err(LlmError::InvalidResponse("回答超过 256 KiB".into())); }
+                                    if answer_bytes > 256 * 1024 {
+                                        return Err(LlmError::InvalidResponse(
+                                            "回答超过 256 KiB".into(),
+                                        ));
+                                    }
                                     // Small frames bound the downstream queue by both count and bytes.
                                     let mut start = 0;
                                     while start < txt.len() {
                                         let mut end = (start + 12 * 1024).min(txt.len());
-                                        while !txt.is_char_boundary(end) { end -= 1; }
-                                        on_event(StreamEvent::Text(txt[start..end].to_string())).await;
+                                        while !txt.is_char_boundary(end) {
+                                            end -= 1;
+                                        }
+                                        on_event(StreamEvent::Text(txt[start..end].to_string()))
+                                            .await;
                                         start = end;
                                     }
                                 }
@@ -190,10 +207,14 @@ impl GeminiClient {
                     }
                 }
             }
-            if buffer.len() > 1024 * 1024 { return Err(LlmError::InvalidResponse("SSE 行超过 1 MiB".into())); }
+            if buffer.len() > 1024 * 1024 {
+                return Err(LlmError::InvalidResponse("SSE 行超过 1 MiB".into()));
+            }
         }
         if !buffer.is_empty() || !event_data.is_empty() || collected_parts.is_empty() {
-            return Err(LlmError::InvalidResponse("模型流不完整或没有有效候选内容".into()));
+            return Err(LlmError::InvalidResponse(
+                "模型流不完整或没有有效候选内容".into(),
+            ));
         }
 
         if let (Some(m), Some(usage)) = (metrics, final_usage) {

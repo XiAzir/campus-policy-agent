@@ -139,7 +139,12 @@ impl Agent {
         metrics: Option<&TurnMetrics>,
         emit_tx: crate::chat::EventSender,
     ) -> Value {
-        let emit = |value| { let tx = emit_tx.clone(); async move { let _ = tx.send(value).await; } };
+        let emit = |value| {
+            let tx = emit_tx.clone();
+            async move {
+                let _ = tx.send(value).await;
+            }
+        };
         let query = args
             .get("query")
             .and_then(|v| v.as_str())
@@ -183,7 +188,10 @@ impl Agent {
                     .unwrap_or("")
                     .trim();
                 let reason = if reason.len() > 160 {
-                    &reason[..reason.char_indices().nth(160).map_or(reason.len(), |(i, _)| i)]
+                    &reason[..reason
+                        .char_indices()
+                        .nth(160)
+                        .map_or(reason.len(), |(i, _)| i)]
                 } else {
                     reason
                 };
@@ -325,7 +333,11 @@ impl Agent {
             });
 
             let excerpt = if h.text.len() > 4000 {
-                &h.text[..h.text.char_indices().nth(4000).map_or(h.text.len(), |(i, _)| i)]
+                &h.text[..h
+                    .text
+                    .char_indices()
+                    .nth(4000)
+                    .map_or(h.text.len(), |(i, _)| i)]
             } else {
                 &h.text
             };
@@ -569,7 +581,12 @@ impl Agent {
         metrics: &TurnMetrics,
         emit_tx: crate::chat::EventSender,
     ) -> Result<AgentResult, LlmError> {
-        let emit = |value| { let tx = emit_tx.clone(); async move { let _ = tx.send(value).await; } };
+        let emit = |value| {
+            let tx = emit_tx.clone();
+            async move {
+                let _ = tx.send(value).await;
+            }
+        };
         let mut evidence: Vec<EvidenceItem> = Vec::new();
         scope.profile = profile.clone();
 
@@ -621,7 +638,8 @@ impl Agent {
             emit(json!({
                 "event": "stage",
                 "stage": if rounds == 0 { "analyzing" } else { "composing" }
-            })).await;
+            }))
+            .await;
 
             let mut current_parts = Vec::new();
             let mut round_text = String::new();
@@ -638,7 +656,7 @@ impl Agent {
                     },
                     0.2,
                     Some(metrics),
-                    |ev| { match ev {
+                    |ev| match ev {
                         StreamEvent::Text(txt) => {
                             round_text.push_str(&txt);
                             Box::pin(emit(json!({ "event": "delta", "text": txt })))
@@ -647,7 +665,7 @@ impl Agent {
                             current_parts = parts;
                             Box::pin(async {})
                         }
-                    } },
+                    },
                 )
                 .await;
 
@@ -687,7 +705,9 @@ impl Agent {
             // 执行工具调用
             let mut fr_parts = Vec::new();
             for call in function_calls {
-                if evidence.len() >= 192 { return Err(LlmError::InvalidResponse("证据条数达到 192 上限".into())); }
+                if evidence.len() >= 192 {
+                    return Err(LlmError::InvalidResponse("证据条数达到 192 上限".into()));
+                }
                 let name = call.get("name").and_then(|v| v.as_str()).unwrap_or("");
                 let args = call.get("args").cloned().unwrap_or(json!({}));
                 let id = call.get("id").and_then(|v| v.as_str());
@@ -710,7 +730,8 @@ impl Agent {
                         if res.get("error").is_some() {
                             emit(
                                 json!({ "event": "stage", "stage": "reading", "status": "failed" }),
-                            ).await;
+                            )
+                            .await;
                         }
                         res
                     }
