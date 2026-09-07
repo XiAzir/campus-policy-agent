@@ -28,7 +28,10 @@ async fn spawn_test_server() -> (String, String, String) {
         .await
         .unwrap()
         .unwrap();
-    let tokens = TokenService::from_hex_secret(&secret, 30).unwrap();
+    let token_svc = TokenService::from_hex_secret(&secret, 30).unwrap();
+    let user_token = token_svc.issue("user", "test-user");
+    let admin_token = token_svc.issue("admin", "test-admin");
+    let tokens = Arc::new(tokio::sync::RwLock::new(token_svc));
     let limiter = Arc::new(RateLimiter::new(100));
     let vectors = Arc::new(VectorIndex::new(config.data_dir.join("vectors")));
     let agent = Arc::new(Agent::new(
@@ -37,9 +40,7 @@ async fn spawn_test_server() -> (String, String, String) {
         config.clone(),
     ));
     let chats = Arc::new(ChatManager::new(1, 10));
-
-    let user_token = tokens.issue("user", "test-user");
-    let admin_token = tokens.issue("admin", "test-admin");
+    let maintenance = Arc::new(campus_policy_backend::maintenance::MaintenanceState::new());
 
     let state = AppState {
         config,
@@ -49,6 +50,7 @@ async fn spawn_test_server() -> (String, String, String) {
         vectors,
         agent,
         chats,
+        maintenance,
     };
 
     let app = create_router(state);

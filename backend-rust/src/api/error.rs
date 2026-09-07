@@ -35,6 +35,18 @@ impl ApiError {
         Self::new(StatusCode::TOO_MANY_REQUESTS, detail)
     }
 
+    pub fn payload_too_large(detail: impl Into<String>) -> Self {
+        Self::new(StatusCode::PAYLOAD_TOO_LARGE, detail)
+    }
+
+    pub fn conflict(detail: impl Into<String>) -> Self {
+        Self::new(StatusCode::CONFLICT, detail)
+    }
+
+    pub fn service_unavailable(detail: impl Into<String>) -> Self {
+        Self::new(StatusCode::SERVICE_UNAVAILABLE, detail)
+    }
+
     pub fn internal(detail: impl Into<String>) -> Self {
         Self::new(StatusCode::INTERNAL_SERVER_ERROR, detail)
     }

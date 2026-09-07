@@ -17,7 +17,7 @@ use serde_json::json;
 use std::collections::HashMap;
 use std::convert::Infallible;
 use std::fs::File;
-use std::io::{BufRead, BufReader};
+use std::io::{BufRead, BufReader, Write};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
@@ -34,8 +34,11 @@ fn get_bearer_token(headers: &HeaderMap) -> Option<&str> {
 
 fn require_user(headers: &HeaderMap, state: &AppState) -> ApiResult<String> {
     let token = get_bearer_token(headers).ok_or_else(|| ApiError::unauthorized("未登录"))?;
-    state
+    let tokens = state
         .tokens
+        .try_read()
+        .map_err(|_| ApiError::service_unavailable("令牌服务忙"))?;
+    tokens
         .verify(token, "user")
         .ok_or_else(|| ApiError::unauthorized("登录已失效"))
 }
@@ -43,8 +46,11 @@ fn require_user(headers: &HeaderMap, state: &AppState) -> ApiResult<String> {
 fn require_admin(headers: &HeaderMap, state: &AppState) -> ApiResult<String> {
     let token =
         get_bearer_token(headers).ok_or_else(|| ApiError::unauthorized("未以管理员身份登录"))?;
-    state
+    let tokens = state
         .tokens
+        .try_read()
+        .map_err(|_| ApiError::service_unavailable("令牌服务忙"))?;
+    tokens
         .verify(token, "admin")
         .ok_or_else(|| ApiError::unauthorized("管理员登录已失效"))
 }
@@ -110,7 +116,10 @@ pub async fn login(
     }
 
     let client_id = hex::encode(rand::random::<[u8; 16]>());
-    let token = state.tokens.issue("user", &client_id);
+    let token = {
+        let tokens = state.tokens.read().await;
+        tokens.issue("user", &client_id)
+    };
     Ok(Json(json!({ "token": token, "client_id": client_id })))
 }
 
@@ -150,7 +159,10 @@ pub async fn admin_login(
     }
 
     let client_id = hex::encode(rand::random::<[u8; 16]>());
-    let token = state.tokens.issue("admin", &client_id);
+    let token = {
+        let tokens = state.tokens.read().await;
+        tokens.issue("admin", &client_id)
+    };
     Ok(Json(
         json!({ "admin_token": token, "client_id": client_id }),
     ))
@@ -725,11 +737,31 @@ pub async fn admin_status(
         }
     }
 
+    let (free_bytes, total_bytes) = {
+        let mut sys = System::new();
+        sys.refresh_memory();
+        (sys.available_memory(), sys.total_memory())
+    };
+    let free_gb = (free_bytes as f64) / 1_000_000_000.0;
+    let total_gb = (total_bytes as f64) / 1_000_000_000.0;
+    let used_gb = (total_gb - free_gb).max(0.0);
+
+    let mut warnings = Vec::new();
+    if (data_bytes as f64) >= state.config.disk_warn_gb * 1e9 {
+        warnings.push(format!(
+            "项目数据已达到 {}GB 告警阈值，请检查容量并清理不再需要的草稿",
+            state.config.disk_warn_gb
+        ));
+    }
+    if free_bytes < 128 * 1024 * 1024 {
+        warnings.push("磁盘可用空间不足安全余量，资料处理将被拒绝".to_string());
+    }
+
     Ok(Json(json!({
         "disk": {
-            "total_gb": 100.0,
-            "used_gb": 20.0,
-            "free_gb": 80.0,
+            "total_gb": (total_gb * 100.0).round() / 100.0,
+            "used_gb": (used_gb * 100.0).round() / 100.0,
+            "free_gb": (free_gb * 100.0).round() / 100.0,
             "warn_gb": state.config.disk_warn_gb,
         },
         "counts": {
@@ -738,8 +770,8 @@ pub async fn admin_status(
             "chunks": counts.chunks,
             "packages": counts.packages,
         },
-        "data_dir_mb": (data_bytes as f64) / 1_000_000.0,
-        "warnings": []
+        "data_dir_mb": ((data_bytes as f64) / 1_000_000.0 * 10.0).round() / 10.0,
+        "warnings": warnings
     })))
 }
 
@@ -760,13 +792,15 @@ pub async fn admin_metrics(
         (0, 0.0)
     };
 
+    let (running, waiting) = state.chats.counts().await;
+
     Ok(Json(json!({
         "at": utcnow(),
         "rss_bytes": rss_bytes,
         "cpu_s": cpu_s,
         "disk_free_bytes": 100_000_000_000u64,
-        "running": 0,
-        "waiting": 0
+        "running": running,
+        "waiting": waiting
     })))
 }
 
@@ -1003,6 +1037,236 @@ pub async fn admin_document_unlink(
         .map_err(|e| ApiError::bad_request(e.to_string()))?;
 
     Ok(Json(json!({ "ok": true })))
+}
+
+// GET /api/admin/backup
+pub async fn admin_backup(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> ApiResult<Response> {
+    require_admin(&headers, &state)?;
+
+    let parent = state
+        .config
+        .data_dir
+        .parent()
+        .unwrap_or_else(|| std::path::Path::new("."));
+    let tmp_zip = tempfile::Builder::new()
+        .prefix("cpb-dl-")
+        .suffix(".zip")
+        .tempfile_in(parent)
+        .map_err(|e| ApiError::internal(format!("创建备份临时文件失败: {}", e)))?;
+    let out_path = tmp_zip.path().to_path_buf();
+
+    crate::backup::create_backup(&state.db, &state.config, &out_path)
+        .await
+        .map_err(|e| ApiError::bad_request(format!("备份失败：{}", e)))?;
+
+    let _ = state
+        .db
+        .audit(
+            "admin".to_string(),
+            "backup_download".to_string(),
+            "".to_string(),
+        )
+        .await;
+
+    let file_bytes = std::fs::read(&out_path)
+        .map_err(|e| ApiError::internal(format!("读取备份结果失败: {}", e)))?;
+    let _ = std::fs::remove_file(&out_path);
+
+    let ts = utcnow().replace(':', "");
+    let filename = format!("backup-{}.zip", ts);
+    let disposition = format!("attachment; filename=\"{}\"", filename);
+
+    let mut response = (StatusCode::OK, file_bytes).into_response();
+    let resp_headers = response.headers_mut();
+    resp_headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/zip"));
+    if let Ok(val) = HeaderValue::from_str(&disposition) {
+        resp_headers.insert(CONTENT_DISPOSITION, val);
+    }
+
+    Ok(response)
+}
+
+// POST /api/admin/restore
+pub async fn admin_restore(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    mut multipart: axum::extract::Multipart,
+) -> ApiResult<Json<serde_json::Value>> {
+    require_admin(&headers, &state)?;
+
+    let parent = state
+        .config
+        .data_dir
+        .parent()
+        .unwrap_or_else(|| std::path::Path::new("."));
+    let tmp_upload = tempfile::Builder::new()
+        .prefix("cpb-restore-upload-")
+        .suffix(".zip")
+        .tempfile_in(parent)
+        .map_err(|e| ApiError::internal(format!("创建恢复临时文件失败: {}", e)))?;
+    let upload_path = tmp_upload.path().to_path_buf();
+
+    let mut found_file = false;
+    let mut total_bytes = 0u64;
+
+    while let Some(mut field) = multipart
+        .next_field()
+        .await
+        .map_err(|e| ApiError::bad_request(format!("解析 multipart 失败: {}", e)))?
+    {
+        if field.name() == Some("file") {
+            let mut out = File::create(&upload_path)
+                .map_err(|e| ApiError::internal(format!("写入上传文件失败: {}", e)))?;
+            while let Some(chunk) = field
+                .chunk()
+                .await
+                .map_err(|e| ApiError::bad_request(format!("读取上传分块失败: {}", e)))?
+            {
+                total_bytes += chunk.len() as u64;
+                if total_bytes > crate::backup::MAX_EXPANDED {
+                    return Err(ApiError::payload_too_large("备份上传大小超限"));
+                }
+                out.write_all(&chunk)
+                    .map_err(|e| ApiError::internal(format!("写入分块失败: {}", e)))?;
+            }
+            out.flush()
+                .map_err(|e| ApiError::internal(format!("刷新上传文件失败: {}", e)))?;
+            found_file = true;
+            break;
+        }
+    }
+
+    if !found_file {
+        return Err(ApiError::bad_request("缺少名为 file 的备份文件字段"));
+    }
+
+    // 1. 验证 ZIP 与解压到私有暂存目录
+    let unpack_dir = tempfile::Builder::new()
+        .prefix("cpb-restore-")
+        .tempdir_in(parent)
+        .map_err(|e| ApiError::internal(format!("创建恢复暂存目录失败: {}", e)))?;
+    let root = unpack_dir.path();
+
+    let f = File::open(&upload_path)
+        .map_err(|e| ApiError::internal(format!("打开上传文件失败: {}", e)))?;
+    let (meta, total_uncompressed) = crate::backup::inspect_backup_archive(f)
+        .map_err(|e| ApiError::bad_request(e.to_string()))?;
+
+    crate::storage::require_space(parent, total_uncompressed)
+        .map_err(|e| ApiError::bad_request(format!("磁盘空间不足: {}", e)))?;
+
+    // 解压各文件并校验哈希
+    {
+        let f = File::open(&upload_path)
+            .map_err(|e| ApiError::internal(format!("打开上传文件失败: {}", e)))?;
+        let mut zip = zip::ZipArchive::new(f)
+            .map_err(|e| ApiError::bad_request(format!("读取 ZIP 失败: {}", e)))?;
+        for (rel_name, record) in &meta.files {
+            let mut zfile = zip
+                .by_name(rel_name)
+                .map_err(|e| ApiError::bad_request(format!("ZIP 缺少条目 {}: {}", rel_name, e)))?;
+            let dest = root.join(rel_name);
+            if let Some(p) = dest.parent() {
+                std::fs::create_dir_all(p)
+                    .map_err(|e| ApiError::internal(format!("创建目录失败: {}", e)))?;
+            }
+            let mut out = File::create(&dest)
+                .map_err(|e| ApiError::internal(format!("创建目标文件失败: {}", e)))?;
+            std::io::copy(&mut zfile, &mut out)
+                .map_err(|e| ApiError::internal(format!("解压文件失败: {}", e)))?;
+            out.flush()
+                .map_err(|e| ApiError::internal(format!("刷新目标文件失败: {}", e)))?;
+            let actual_hash = crate::storage::hash_file(&dest)
+                .map_err(|e| ApiError::internal(format!("校验哈希失败: {}", e)))?;
+            if actual_hash != record.sha256 {
+                return Err(ApiError::bad_request(format!(
+                    "备份文件哈希校验失败: {}",
+                    rel_name
+                )));
+            }
+        }
+    }
+
+    // 2. 深入校验已解压快照
+    crate::backup::check_unpacked_snapshot(root, &state.config, &meta)
+        .map_err(|e| ApiError::bad_request(e.to_string()))?;
+
+    // 3. 进入维护模式
+    if state.maintenance.is_restoring() {
+        return Err(ApiError::conflict("已有恢复任务正在进行"));
+    }
+    state
+        .maintenance
+        .restoring
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+
+    // 取消所有进行中问答
+    state.chats.cancel_all().await;
+
+    // 最多等待活动请求 30 秒
+    if let Err(e) = state.maintenance.drain(30).await {
+        state
+            .maintenance
+            .restoring
+            .store(false, std::sync::atomic::Ordering::SeqCst);
+        return Err(ApiError::conflict(e));
+    }
+
+    // 4. 原子安装与回滚保护
+    let vectors_clone = Arc::clone(&state.vectors);
+    let install_res =
+        crate::backup::install_backup(&state.db, &state.config, root, &meta, move || {
+            vectors_clone.close_all();
+        })
+        .await;
+
+    let summary = match install_res {
+        Ok(counts) => {
+            // 刷新 token_secret
+            if let Ok(Some(sec)) = state.db.setting_get("token_secret".to_string()).await
+                && let Ok(new_tokens) = crate::auth::TokenService::from_hex_secret(&sec, 30)
+            {
+                let mut lock = state.tokens.write().await;
+                *lock = new_tokens;
+            }
+            let _ = state
+                .db
+                .audit(
+                    "admin".to_string(),
+                    "backup_restore".to_string(),
+                    format!("docs={}", counts.documents),
+                )
+                .await;
+            state
+                .maintenance
+                .restoring
+                .store(false, std::sync::atomic::Ordering::SeqCst);
+            counts
+        }
+        Err(e) => {
+            state
+                .maintenance
+                .failed
+                .store(true, std::sync::atomic::Ordering::SeqCst);
+            return Err(ApiError::service_unavailable(format!(
+                "恢复回滚失败，服务已锁定；请停止服务后按恢复故障步骤处理: {}",
+                e
+            )));
+        }
+    };
+
+    let _ = std::fs::remove_file(&upload_path);
+
+    Ok(Json(json!({
+        "ok": true,
+        "summary": {
+            "documents": summary.documents,
+            "chunks": summary.chunks
+        }
+    })))
 }
 
 pub async fn fallback_handler() -> Json<serde_json::Value> {

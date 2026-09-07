@@ -313,6 +313,12 @@ impl ChatManager {
         *running = None;
         waiting.clear();
     }
+
+    pub async fn counts(&self) -> (usize, usize) {
+        let running = self.running.lock().await;
+        let waiting = self.waiting.lock().await;
+        (if running.is_some() { 1 } else { 0 }, waiting.len())
+    }
 }
 
 pub fn trim_history(

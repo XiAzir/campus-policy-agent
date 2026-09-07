@@ -222,6 +222,8 @@ async fn test_mock_upstream_sse_chat_flow() {
     let chats = Arc::new(ChatManager::new(1, 10));
 
     let user_token = tokens.issue("user", "test-user");
+    let tokens = Arc::new(tokio::sync::RwLock::new(tokens));
+    let maintenance = Arc::new(campus_policy_backend::maintenance::MaintenanceState::new());
 
     let state = AppState {
         config,
@@ -231,6 +233,7 @@ async fn test_mock_upstream_sse_chat_flow() {
         vectors,
         agent,
         chats,
+        maintenance,
     };
 
     let app = create_router(state);
@@ -371,6 +374,8 @@ async fn test_mock_upstream_expand_request_flow() {
     ));
     let chats = Arc::new(ChatManager::new(1, 10));
     let user_token = tokens.issue("user", "test-user");
+    let tokens = Arc::new(tokio::sync::RwLock::new(tokens));
+    let maintenance = Arc::new(campus_policy_backend::maintenance::MaintenanceState::new());
 
     let state = AppState {
         config,
@@ -380,6 +385,7 @@ async fn test_mock_upstream_expand_request_flow() {
         vectors,
         agent,
         chats,
+        maintenance,
     };
 
     let app = create_router(state);
@@ -491,6 +497,8 @@ async fn test_mock_upstream_error_flow() {
     ));
     let chats = Arc::new(ChatManager::new(1, 10));
     let user_token = tokens.issue("user", "test-user");
+    let tokens = Arc::new(tokio::sync::RwLock::new(tokens));
+    let maintenance = Arc::new(campus_policy_backend::maintenance::MaintenanceState::new());
 
     let state = AppState {
         config,
@@ -500,6 +508,7 @@ async fn test_mock_upstream_error_flow() {
         vectors,
         agent,
         chats,
+        maintenance,
     };
 
     let app = create_router(state);

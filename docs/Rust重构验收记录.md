@@ -76,3 +76,18 @@ M3 出阶段门槛：Gemini 原生流式、只读三工具调度、单工作槽�
 | 代码质量校验与全套测试 | `cargo clippy --all-targets --locked -- -D warnings` & `cargo fmt --check` & `cargo test --locked` (WSL) | **0 warnings, 0 errors**，全套 33 项测试（15 单元 + 6 Agent 集成 + 6 API 集成 + 6 Ingest 集成）全部通过 |
 
 M4 出阶段门槛：恶意包与路径穿越防御通过、元数据修正限制生效、事务发布与替代关系完整、管理端 HTTP 接口契约完全达成。
+
+## M5：v2 备份双向兼容、维护门、故障标记与原子回滚恢复（2026-09-07）
+
+| 项 | 命令 | 结果 |
+| --- | --- | --- |
+| SQLite Backup 快照与 v2 备份导出 | `cargo test --test backup_integration test_backup_create_and_validate` (WSL) | 基于 SQLite Backup API 生成一致快照 `db.sqlite`；输出符合 `format=campus-policy-backup, version=2` 的 `backup.json`，含不可变文件 SHA-256 与大小清单，流式打包不长期持有写锁 |
+| 备份安全解压防护与深度校验 | `cargo test --test backup_integration test_restore_rejected_cases` (WSL) | 严格拦截 `../` 路径穿越、条目数上限（100,000）、解压上限（10 GiB）、压缩比炸弹（>200）以及清单与文件不一致的坏备份 |
+| 数据库完整性与外键校验 | `check_unpacked_snapshot` 深入执行 | 校验 9 张核心数据表结构与 `audience_scope` 兼容字段；PRAGMA integrity_check 与 foreign_key_check；全量资料行数/哈希、FTS 关联、向量行连续性与归一化（模长容差 1e-3） |
+| 维护门模式与旧任务优雅排空 | `cargo test --test backup_integration test_maintenance_gate_and_restore_cycle` (WSL) | 维护门开启期间所有新 `/api` 请求返回 503；自动触发 `cancel_all` 终止排队和运行中问答任务；最多等待活动请求 30 秒超时保护 |
+| 原子安装、标记文件与回滚状态机 | `install_backup` 状态机执行 | 写入 `<DATA_DIR>.restore-in-progress` 标记；安全关闭当前读写连接与向量句柄；同级目录原子移动 `current -> rollback` 并安装新目录；重开数据库验证查询成功后清理 rollback 目录与标记；失败保留现场锁死 |
+| 令牌签名密钥热刷新 | HTTP POST `/api/admin/restore` 触发验证 | 恢复成功后从新库 `settings.token_secret` 动态重载 `TokenService`，旧令牌安全失效，备份中的管理员与用户令牌无缝互认 |
+| HTTP 管理端端点全链路 | `GET /api/admin/backup` & `POST /api/admin/restore` (WSL) | 备份下载流式分发、带时间戳中文附件名；恢复接口 multipart 上传与 10 GiB 上限拦截；恢复后 catalog 列表秒级就绪 |
+| 代码质量校验与全套测试 | `cargo clippy --all-targets --locked -- -D warnings` & `cargo fmt --check` & `cargo test --locked` (WSL) | **0 warnings, 0 errors**，全套 36 项测试（15 单元 + 6 Agent 集成 + 6 API 集成 + 6 Ingest 集成 + 3 Backup 集成）全部通过 |
+
+M5 出阶段门槛：v2 双向备份结构完全符合、坏备份/路径穿越拦截有效、维护门 503 拦截生效、原子替换与回滚保护可靠、恢复后继续读写通过。

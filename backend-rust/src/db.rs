@@ -2,7 +2,7 @@ use chrono::Utc;
 use rusqlite::{Connection, Result, params};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc::{SyncSender, sync_channel};
@@ -131,6 +131,8 @@ fn open_connection(path: &Path, readonly: bool) -> Result<Connection> {
 
 enum JobMessage {
     Execute(Box<dyn FnOnce(&mut Connection) + Send + 'static>),
+    Reopen(PathBuf, tokio::sync::oneshot::Sender<Result<()>>),
+    Close(tokio::sync::oneshot::Sender<Result<()>>),
 }
 
 #[derive(Clone)]
@@ -138,6 +140,7 @@ pub struct DbPool {
     writer_tx: SyncSender<JobMessage>,
     reader_txs: Vec<SyncSender<JobMessage>>,
     reader_cursor: Arc<AtomicUsize>,
+    pub path: PathBuf,
 }
 
 impl DbPool {
@@ -169,10 +172,32 @@ impl DbPool {
         thread::Builder::new()
             .name("sqlite-writer".to_string())
             .spawn(move || {
-                let mut conn = open_connection(&write_path, false).expect("初始化写连接失败");
+                let mut current_path = write_path;
+                let mut conn_opt = open_connection(&current_path, false).ok();
                 while let Ok(msg) = writer_rx.recv() {
                     match msg {
-                        JobMessage::Execute(job) => job(&mut conn),
+                        JobMessage::Execute(job) => {
+                            if let Some(ref mut conn) = conn_opt {
+                                job(conn);
+                            }
+                        }
+                        JobMessage::Reopen(new_path, resp_tx) => {
+                            current_path = new_path;
+                            conn_opt = None;
+                            match open_connection(&current_path, false) {
+                                Ok(new_conn) => {
+                                    conn_opt = Some(new_conn);
+                                    let _ = resp_tx.send(Ok(()));
+                                }
+                                Err(e) => {
+                                    let _ = resp_tx.send(Err(e));
+                                }
+                            }
+                        }
+                        JobMessage::Close(resp_tx) => {
+                            conn_opt = None;
+                            let _ = resp_tx.send(Ok(()));
+                        }
                     }
                 }
             })
@@ -187,10 +212,32 @@ impl DbPool {
             thread::Builder::new()
                 .name(format!("sqlite-reader-{}", i))
                 .spawn(move || {
-                    let mut conn = open_connection(&read_path, true).expect("初始化读连接失败");
+                    let mut current_path = read_path;
+                    let mut conn_opt = open_connection(&current_path, true).ok();
                     while let Ok(msg) = rrx.recv() {
                         match msg {
-                            JobMessage::Execute(job) => job(&mut conn),
+                            JobMessage::Execute(job) => {
+                                if let Some(ref mut conn) = conn_opt {
+                                    job(conn);
+                                }
+                            }
+                            JobMessage::Reopen(new_path, resp_tx) => {
+                                current_path = new_path;
+                                conn_opt = None;
+                                match open_connection(&current_path, true) {
+                                    Ok(new_conn) => {
+                                        conn_opt = Some(new_conn);
+                                        let _ = resp_tx.send(Ok(()));
+                                    }
+                                    Err(e) => {
+                                        let _ = resp_tx.send(Err(e));
+                                    }
+                                }
+                            }
+                            JobMessage::Close(resp_tx) => {
+                                conn_opt = None;
+                                let _ = resp_tx.send(Ok(()));
+                            }
                         }
                     }
                 })
@@ -201,7 +248,69 @@ impl DbPool {
             writer_tx,
             reader_txs,
             reader_cursor: Arc::new(AtomicUsize::new(0)),
+            path: path.to_path_buf(),
         })
+    }
+
+    /// 关闭所有数据库连接（释放文件句柄）
+    pub async fn close(&self) -> Result<()> {
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        self.writer_tx.send(JobMessage::Close(tx)).map_err(|_| {
+            rusqlite::Error::SqliteFailure(
+                rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_BUSY),
+                Some("写连接已关闭".to_string()),
+            )
+        })?;
+        let _ = rx.await;
+
+        for rtx in &self.reader_txs {
+            let (tx, rx) = tokio::sync::oneshot::channel();
+            let _ = rtx.send(JobMessage::Close(tx));
+            let _ = rx.await;
+        }
+        Ok(())
+    }
+
+    /// 重新打开所有数据库连接
+    pub async fn reopen(&self, new_path: Option<&Path>) -> Result<()> {
+        let target_path = new_path
+            .map(|p| p.to_path_buf())
+            .unwrap_or_else(|| self.path.clone());
+
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        self.writer_tx
+            .send(JobMessage::Reopen(target_path.clone(), tx))
+            .map_err(|_| {
+                rusqlite::Error::SqliteFailure(
+                    rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_BUSY),
+                    Some("写连接重开失败".to_string()),
+                )
+            })?;
+        rx.await.map_err(|_| {
+            rusqlite::Error::SqliteFailure(
+                rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_BUSY),
+                Some("写连接应答中断".to_string()),
+            )
+        })??;
+
+        for rtx in &self.reader_txs {
+            let (tx, rx) = tokio::sync::oneshot::channel();
+            rtx.send(JobMessage::Reopen(target_path.clone(), tx))
+                .map_err(|_| {
+                    rusqlite::Error::SqliteFailure(
+                        rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_BUSY),
+                        Some("读连接重开失败".to_string()),
+                    )
+                })?;
+            rx.await.map_err(|_| {
+                rusqlite::Error::SqliteFailure(
+                    rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_BUSY),
+                    Some("读连接应答中断".to_string()),
+                )
+            })??;
+        }
+
+        Ok(())
     }
 
     /// 执行读操作

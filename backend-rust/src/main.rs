@@ -47,8 +47,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     };
 
-    let tokens = TokenService::from_hex_secret(&secret, config.token_ttl_days)
+    let token_svc = TokenService::from_hex_secret(&secret, config.token_ttl_days)
         .map_err(std::io::Error::other)?;
+    let tokens = Arc::new(tokio::sync::RwLock::new(token_svc));
 
     let limiter = Arc::new(RateLimiter::new(10_000));
     let vectors = Arc::new(VectorIndex::new(config.data_dir.join("vectors")));
@@ -57,6 +58,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         config.chat_concurrency,
         config.chat_queue_max,
     ));
+    let maintenance = Arc::new(campus_policy_backend::maintenance::MaintenanceState::new());
 
     let state = AppState {
         config: config.clone(),
@@ -66,6 +68,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         vectors,
         agent,
         chats,
+        maintenance,
     };
 
     let app = create_router(state);
