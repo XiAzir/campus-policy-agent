@@ -2,7 +2,7 @@
 
 为 30～80 位同学提供手机、电脑均可使用的政策问答网站：领域筛选、跨领域查询、原文行号溯源、版本管理（现行/往年/手动停用）。管理员负责资料发布，学生不上传文件。实施依据见 [plan.md](plan.md)。
 
-低内存重构规范见 [Rust 低内存重构 Spec](docs/Rust低内存重构Spec.md)；已在 `rust` 分支完成全部重构并全量测试通过（全套 36 项 Rust 测试全部通过，D1 混合检索 p95 仅 20ms、常驻内存仅 87.92MB，详见 [Rust 内存基准报告](docs/Rust内存基准报告.md) 与 [Rust 重构验收记录](docs/Rust重构验收记录.md)）。
+低内存重构规范见 [Rust 低内存重构 Spec](docs/Rust低内存重构Spec.md)。P1/P2 审查问题已在 `rust` 分支修复并通过本机回归，但目标 Ubuntu 24.04 完整服务容量、双向恢复和上线验收尚未完成，详见 [Rust 内存基准记录](docs/Rust内存基准报告.md) 与 [Rust 重构验收记录](docs/Rust重构验收记录.md)。
 
 ## 结构
 
@@ -20,15 +20,24 @@
 ### 方式一：运行原生 Rust 后端（低内存推荐，默认端口 8012）
 
 ```powershell
-# 1) 构建前端并编译 Rust release 二进制
+# 在仓库根目录执行。首次运行或源码更新后先构建：
 npm.cmd --prefix frontend run build
-cargo build --manifest-path backend-rust/Cargo.toml --release
+wsl --cd /mnt/e/VSCODE-project/campus-policy-agent/backend-rust --exec cargo build --release --locked
 
-# 2) 一键启动（自动加载根目录 .env，数据目录隔离于 .local-acceptance/rust-data）
+# 启动：自动加载根目录 .env，并通过 WSL 运行 Linux release 二进制。
+# 数据只写入 .local-acceptance/rust-data，不会打开正式数据目录。
 pwsh -NoProfile -File ./scripts/start-local-rust.ps1
 ```
 
-用户端访问 `http://127.0.0.1:8012/`，管理端 `http://127.0.0.1:8012/#/admin`。
+用户端访问 `http://127.0.0.1:8012/`，管理端访问 `http://127.0.0.1:8012/#/admin`。初始管理员密码取 `.env` 的 `INITIAL_ADMIN_PASSWORD`，未配置时为 `admin`；首次进入管理端后先修改管理员密码并设置用户访问码。终端保持运行，按 `Ctrl+C` 停止。
+
+端口被占用时可改用：
+
+```powershell
+pwsh -NoProfile -File ./scripts/start-local-rust.ps1 -Port 8013
+```
+
+启动前必须存在根目录 `.env`，至少配置 `GEMINI_BASE_URL`、`GEMINI_MODEL`、`GEMINI_API_KEY` 和 `SILICONFLOW_API_KEY`。脚本不会打印密钥内容。
 
 ### 方式二：运行 Python 试用（作为对比基准，默认端口 8011）
 

@@ -6,6 +6,7 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
+$useWsl = $false
 
 if (!$ConfigFile) {
     $ConfigFile = Join-Path $root '.env'
@@ -28,6 +29,7 @@ if (!$Binary) {
         $relLinux = Join-Path $root 'backend-rust/target/release/campus_policy_backend'
         if (Test-Path -LiteralPath $relLinux) {
             $Binary = $relLinux
+            $useWsl = $true
         } else {
             throw 'Rust binary not found. Build it first with: cargo build --manifest-path backend-rust/Cargo.toml --release'
         }
@@ -83,8 +85,32 @@ Write-Host "=========================================="
 
 Push-Location $root
 try {
-    & $Binary
-    if ($LASTEXITCODE -ne 0) {
+    if ($useWsl) {
+        $wslRoot = (wsl.exe --exec wslpath -a ($root -replace '\\', '/')).Trim()
+        if (!$wslRoot) {
+            throw 'Cannot resolve the project path inside WSL.'
+        }
+        $wslConfig = (wsl.exe --exec wslpath -a ($ConfigFile -replace '\\', '/')).Trim()
+        $wslData = "$wslRoot/.local-acceptance/rust-data"
+        $wslFrontend = "$wslRoot/frontend/dist"
+        $wslBinary = "$wslRoot/backend-rust/target/release/campus_policy_backend"
+        $launch = @"
+set -a
+source '$wslConfig'
+set +a
+export DATA_DIR='$wslData'
+export FRONTEND_DIST='$wslFrontend'
+export PORT='$Port'
+export HOST='127.0.0.1'
+export INITIAL_ADMIN_PASSWORD="`${INITIAL_ADMIN_PASSWORD:-admin}"
+exec '$wslBinary'
+"@
+        wsl.exe --cd $wslRoot --exec bash -lc $launch
+    } else {
+        & $Binary
+    }
+    # Ctrl+C may be surfaced by wsl.exe as 2 or 130; both are normal operator shutdowns.
+    if ($LASTEXITCODE -notin @(0, 2, 130)) {
         throw "Rust backend exited with code $LASTEXITCODE"
     }
 } finally {
