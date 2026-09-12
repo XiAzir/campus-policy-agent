@@ -1,0 +1,54 @@
+name: Rust audit
+on:
+  push:
+    branches: [rust, rust-audit-20260913]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: rust-audit-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  test:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Archive tracked source
+        run: git archive --format=zip --prefix=campus-policy-agent/ HEAD -o source.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: source-${{ github.sha }}
+          path: source.zip
+          retention-days: 7
+      - name: Install Rust
+        working-directory: backend-rust
+        run: rustup show active-toolchain
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            backend-rust/target
+          key: rust-audit-${{ runner.os }}-${{ hashFiles('backend-rust/Cargo.lock') }}
+          restore-keys: rust-audit-${{ runner.os }}-
+      - name: Tests
+        working-directory: backend-rust
+        run: |
+          set -o pipefail
+          cargo test --locked --all-targets 2>&1 | tee ../rust-tests.txt
+      - name: Release build
+        working-directory: backend-rust
+        run: |
+          set -o pipefail
+          cargo build --locked --release --bins 2>&1 | tee ../rust-build.txt
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: verification-${{ github.sha }}
+          path: |
+            rust-tests.txt
+            rust-build.txt
+            backend-rust/target/release/campus_policy_backend
+            backend-rust/target/release/bench_d1
+          retention-days: 7
