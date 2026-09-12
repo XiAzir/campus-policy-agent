@@ -4,6 +4,9 @@ on:
     branches: [rust-audit-tooling-20260913]
 permissions:
   contents: read
+concurrency:
+  group: audit-tooling
+  cancel-in-progress: true
 jobs:
   tooling:
     runs-on: ubuntu-22.04
@@ -20,7 +23,7 @@ jobs:
         working-directory: backend-rust
         run: |
           toolchain=$(dirname "$(dirname "$(rustup which rustc)")")
-          tar -C "$toolchain" -czf ../rust-toolchain.tar.gz bin lib --exclude='lib/rustlib/src' --exclude='lib/rustlib/rustc-src' || [ $? -eq 1 ]
+          tar -C "$toolchain" --exclude='lib/rustlib/src' --exclude='lib/rustlib/rustc-src' -czf ../rust-toolchain.tar.gz bin lib
           tar -C "$HOME/.cargo" -czf ../rust-registry.tar.gz registry
           rustc -Vv > ../rust-version.txt
       - uses: actions/upload-artifact@v4
