@@ -1,46 +1,22 @@
-name: Rust audit transfer and verification
+name: Rust audit
 on:
   push:
-    branches: [rust-audit-20260913]
+    branches: [rust, rust-audit-20260913]
+    paths: ['backend-rust/**', 'frontend/**', 'scripts/rust/**', '.github/workflows/rust-audit.yml']
+  pull_request:
+    branches: [rust]
   workflow_dispatch:
 permissions:
-  contents: write
+  contents: read
 concurrency:
   group: rust-audit-${{ github.ref }}
   cancel-in-progress: true
 jobs:
-  verify:
+  rust:
     runs-on: ubuntu-22.04
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-      - name: Verify baseline and apply audited source
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          git diff --exit-code 490430736a798b319090d2a4e63e31042a34a17b -- . ':!.github/workflows/rust-audit.yml'
-          payload="$RUNNER_TEMP/audit.xz"
-          : > "$payload"
-          for sha in a77484db0686b8896471aedf83c5cb344bc40db1 5b7f2ca2b2869e877cd2a91f28ed4c38927c8f70 27cd970de10f46b0db54f0084ff92a9c3dc99066; do
-            gh api "repos/XiAzir/campus-policy-agent/git/blobs/$sha" --jq .content | base64 -d >> "$payload"
-          done
-          echo "c2b240965bb0da8984b001b00269eec2651a5b2122b158c59fef71ad10506490  $payload" | sha256sum -c -
-          xz -dc "$payload" > "$RUNNER_TEMP/audit.patch"
-          test "$(wc -c < "$RUNNER_TEMP/audit.patch")" -eq 126178
-          git apply --check --unidiff-zero "$RUNNER_TEMP/audit.patch"
-          git apply --unidiff-zero "$RUNNER_TEMP/audit.patch"
-          python3 - <<'PY'
-          from pathlib import Path
-          p = Path('scripts/rust/gen_d1.py')
-          text = p.read_text()
-          assert text.count('            start = 1\n') == 1
-          text = text.replace('            start = 1\n', '            start = 2  # Line 1 is the document title, not part of a chunk.\n')
-          text = text.replace('-> tuple[str, list[str]]:', '-> tuple[str, list[str], list[int]]:')
-          p.write_text(text)
-          PY
       - name: Rust toolchain
         working-directory: backend-rust
         run: |
@@ -60,7 +36,7 @@ jobs:
           set -o pipefail
           cargo fmt --all --check
           cargo clippy --locked --all-targets -- -D warnings 2>&1 | tee ../rust-clippy.txt
-      - name: Rust tests
+      - name: Tests
         working-directory: backend-rust
         run: |
           set -o pipefail
@@ -70,6 +46,23 @@ jobs:
         run: |
           set -o pipefail
           cargo build --locked --release --bins 2>&1 | tee ../rust-build.txt
+      - name: Source archive
+        run: git archive --format=zip --prefix=campus-policy-agent/ HEAD -o source.zip
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: rust-verification-${{ github.sha }}
+          path: |
+            source.zip
+            rust-clippy.txt
+            rust-tests.txt
+            rust-build.txt
+          retention-days: 14
+  frontend:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
@@ -82,29 +75,12 @@ jobs:
           npm ci 2>&1 | tee ../frontend-install.txt
           npm test 2>&1 | tee ../frontend-tests.txt
           npm run build 2>&1 | tee ../frontend-build.txt
-      - name: Commit verified source to review branch only
-        run: |
-          git config user.name 'github-actions[bot]'
-          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add backend-rust/Cargo.toml backend-rust/src backend-rust/tests plan.md scripts/rust/bench_http.py scripts/rust/gen_d1.py
-          git diff --cached --stat
-          git commit -m 'Rust审查：有界检索、输入与恢复加固及完整回归修复'
-          git push origin HEAD:rust-audit-20260913
-          git rev-parse HEAD > verified-commit.txt
-          git archive --format=zip --prefix=campus-policy-agent/ HEAD -o source.zip
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: audit-verification-${{ github.run_id }}
+          name: frontend-verification-${{ github.sha }}
           path: |
-            source.zip
-            verified-commit.txt
-            rust-clippy.txt
-            rust-tests.txt
-            rust-build.txt
             frontend-install.txt
             frontend-tests.txt
             frontend-build.txt
-            backend-rust/target/release/campus_policy_backend
-            backend-rust/target/release/bench_d1
-          retention-days: 7
+          retention-days: 14

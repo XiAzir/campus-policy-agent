@@ -63,7 +63,7 @@ pub fn preflight<R: Read + Seek>(
             let mut record = [0u8; 56];
             reader.read_exact(&mut record)?;
             if record[..4] != *b"PK\x06\x06"
-                || u64_at(&record, 4) < 44
+                || !(44..=44 + 65_536).contains(&u64_at(&record, 4))
                 || position
                     .checked_add(12)
                     .and_then(|v| v.checked_add(u64_at(&record, 4)))
@@ -90,11 +90,33 @@ pub fn preflight<R: Read + Seek>(
     if entries > max_entries || directory_size > max_directory {
         return Err(invalid("ZIP 条目数或中央目录大小超过上限"));
     }
-    if directory_offset
-        .checked_add(directory_size)
-        .is_none_or(|end| end > directory_end)
-    {
-        return Err(invalid("ZIP 中央目录越界"));
+    if directory_offset.checked_add(directory_size) != Some(directory_end) {
+        return Err(invalid("ZIP 中央目录越界或与结束记录不连续"));
+    }
+    // Check physical record lengths, not just the untrusted EOCD size. Otherwise
+    // large names/extra fields could make the library read beyond that budget.
+    let mut position = directory_offset;
+    for _ in 0..entries {
+        if position
+            .checked_add(46)
+            .is_none_or(|end| end > directory_end)
+        {
+            return Err(invalid("ZIP 中央目录条目数与实际长度不一致"));
+        }
+        reader.seek(SeekFrom::Start(position))?;
+        let mut header = [0u8; 46];
+        reader.read_exact(&mut header)?;
+        if header[..4] != *b"PK\x01\x02" {
+            return Err(invalid("ZIP 中央目录条目无效"));
+        }
+        let variable = u16_at(&header, 28) + u16_at(&header, 30) + u16_at(&header, 32);
+        position = position
+            .checked_add(46 + variable)
+            .filter(|&end| end <= directory_end)
+            .ok_or_else(|| invalid("ZIP 中央目录可变字段越界"))?;
+    }
+    if position != directory_end {
+        return Err(invalid("ZIP 中央目录实际条目数与声明不一致"));
     }
     reader.seek(SeekFrom::Start(0))?;
     Ok(())
@@ -121,6 +143,13 @@ mod tests {
         let end = bad.len() - 22;
         bad[end + 8..end + 12].fill(0xff);
         assert!(preflight(&mut Cursor::new(bad), 100, 4096).is_err());
+        let mut wrong_count = bytes.clone();
+        wrong_count[end + 8..end + 12].fill(0);
+        assert!(preflight(&mut Cursor::new(wrong_count), 100, 4096).is_err());
+        let mut oversized_name = bytes.clone();
+        let cd = u32_at(&oversized_name, end + 16) as usize;
+        oversized_name[cd + 28..cd + 30].fill(255);
+        assert!(preflight(&mut Cursor::new(oversized_name), 100, 4096).is_err());
         let mut trailing = bytes;
         trailing.push(0);
         assert!(preflight(&mut Cursor::new(trailing), 100, 4096).is_err());
