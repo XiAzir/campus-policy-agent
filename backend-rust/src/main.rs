@@ -5,7 +5,6 @@ use campus_policy_backend::chat::ChatManager;
 use campus_policy_backend::config::Config;
 use campus_policy_backend::db::DbPool;
 use campus_policy_backend::vectors::VectorIndex;
-use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::net::TcpListener;
 
@@ -73,8 +72,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     let app = create_router(state);
-    let addr: SocketAddr = format!("{}:{}", config.host, config.port).parse()?;
-    let listener = TcpListener::bind(addr).await?;
+    let listener = TcpListener::bind((config.host.as_str(), config.port)).await?;
+    let addr = listener.local_addr()?;
     println!("服务已就绪，正在监听: http://{}", addr);
 
     axum::serve(

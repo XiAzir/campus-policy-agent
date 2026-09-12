@@ -5,7 +5,7 @@ use regex::Regex;
 use serde_json::Value;
 use std::collections::HashSet;
 use std::fs::File;
-use std::io::{BufRead, BufReader, Read};
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use zip::ZipArchive;
 
@@ -58,6 +58,7 @@ impl From<zip::result::ZipError> for PackageError {
 
 pub struct ValidatedPackage {
     _temp: tempfile::TempDir,
+    /// Manifest header; document values are owned once in `documents`.
     pub manifest: Value,
     pub documents: Vec<Value>,
     pub root: PathBuf,
@@ -148,8 +149,12 @@ pub fn check_zip_safety<R: Read + std::io::Seek>(
             )));
         }
 
-        total_uncompressed += file.size();
-        total_compressed += file.compressed_size();
+        total_uncompressed = total_uncompressed
+            .checked_add(file.size())
+            .ok_or_else(|| PackageError::SizeLimitExceeded("解压大小溢出".into()))?;
+        total_compressed = total_compressed
+            .checked_add(file.compressed_size())
+            .ok_or_else(|| PackageError::SizeLimitExceeded("压缩大小溢出".into()))?;
     }
 
     if total_uncompressed > MAX_TOTAL_UNCOMPRESSED {
@@ -160,7 +165,7 @@ pub fn check_zip_safety<R: Read + std::io::Seek>(
     }
 
     let comp_base = total_compressed.max(1);
-    if total_uncompressed / comp_base > MAX_RATIO {
+    if u128::from(total_uncompressed) > u128::from(comp_base) * u128::from(MAX_RATIO) {
         return Err(PackageError::SafetyViolation(
             "压缩比异常（疑似解压炸弹）".into(),
         ));
@@ -169,7 +174,7 @@ pub fn check_zip_safety<R: Read + std::io::Seek>(
     Ok(total_uncompressed)
 }
 
-pub fn validate_manifest(manifest: &Value) -> Result<Vec<Value>, PackageError> {
+pub fn validate_manifest(manifest: &Value) -> Result<&[Value], PackageError> {
     if manifest.get("format_version").and_then(|v| v.as_i64()) != Some(FORMAT_VERSION) {
         return Err(PackageError::ManifestInvalid(format!(
             "format_version 必须是 {}",
@@ -271,7 +276,11 @@ pub fn validate_manifest(manifest: &Value) -> Result<Vec<Value>, PackageError> {
         }
 
         let filename = doc["original_filename"].as_str().unwrap();
-        if filename.contains('/') || filename.contains('\\') || filename.contains(':') {
+        if filename.contains('/')
+            || filename.contains('\\')
+            || filename.contains(':')
+            || filename.chars().any(char::is_control)
+        {
             return Err(PackageError::ManifestInvalid(format!(
                 "{}.original_filename 类型或路径不合法",
                 where_ctx
@@ -339,6 +348,37 @@ pub fn validate_manifest(manifest: &Value) -> Result<Vec<Value>, PackageError> {
             )));
         }
 
+        if doc.get("sections").is_some_and(|v| !v.is_array()) {
+            return Err(PackageError::ManifestInvalid("sections 必须是数组".into()));
+        }
+        if let Some(scope) = doc.get("audience_scope")
+            && !scope.is_object()
+        {
+            return Err(PackageError::ManifestInvalid(
+                "audience_scope 必须是对象".into(),
+            ));
+        }
+        if let Some(map) = doc.get("page_map").filter(|v| !v.is_null()) {
+            let marks = map.as_array().ok_or_else(|| {
+                PackageError::ManifestInvalid("page_map 必须是数组或 null".into())
+            })?;
+            let mut previous_line = 0;
+            let mut previous_page = 0;
+            for mark in marks {
+                let pair = mark.as_array().filter(|p| p.len() == 2).ok_or_else(|| {
+                    PackageError::ManifestInvalid("page_map 条目必须是 [行号, 页码]".into())
+                })?;
+                let line = pair[0].as_i64().unwrap_or(0);
+                let page = pair[1].as_i64().unwrap_or(0);
+                if line <= previous_line || line > line_count || page < 1 || page < previous_page {
+                    return Err(PackageError::ManifestInvalid(
+                        "page_map 行号或页码越界、倒序".into(),
+                    ));
+                }
+                previous_line = line;
+                previous_page = page;
+            }
+        }
         let mut section_ids = HashSet::new();
         if let Some(sections) = doc.get("sections").and_then(|v| v.as_array()) {
             for sec in sections {
@@ -495,7 +535,7 @@ pub fn validate_manifest(manifest: &Value) -> Result<Vec<Value>, PackageError> {
         ));
     }
 
-    Ok(docs.clone())
+    Ok(docs)
 }
 
 pub fn validate_package_archive(
@@ -503,19 +543,24 @@ pub fn validate_package_archive(
     config: &Config,
     check_identity: bool,
 ) -> Result<ValidatedPackage, PackageError> {
-    let file = File::open(zip_path)?;
+    let mut file = File::open(zip_path)?;
     let size = file.metadata()?.len();
-    if size > (config.max_package_mb as u64 * 1024 * 1024).min(MAX_PACKAGE_BYTES) {
+    if size
+        > (config.max_package_mb as u64)
+            .saturating_mul(1024 * 1024)
+            .min(MAX_PACKAGE_BYTES)
+    {
         return Err(PackageError::SizeLimitExceeded(
             "包大小超过单包上限，请分包".into(),
         ));
     }
 
     let sha256 = hash_file(zip_path)?;
+    crate::archive::preflight(&mut file, 10_002, 4 * 1024 * 1024)?;
     let mut archive = ZipArchive::new(file)?;
     let total_uncompressed = check_zip_safety(&mut archive)?;
 
-    let manifest: Value;
+    let mut manifest: Value;
     {
         let mut manifest_file = archive.by_name("manifest.json").map_err(|_| {
             PackageError::SafetyViolation("缺少 manifest.json 或 vectors.npy".into())
@@ -527,7 +572,14 @@ pub fn validate_package_archive(
         }
 
         let mut manifest_str = String::new();
-        manifest_file.read_to_string(&mut manifest_str)?;
+        (&mut manifest_file)
+            .take(MAX_MANIFEST_BYTES + 1)
+            .read_to_string(&mut manifest_str)?;
+        if manifest_str.len() as u64 > MAX_MANIFEST_BYTES {
+            return Err(PackageError::SizeLimitExceeded(
+                "manifest 实际大小超限".into(),
+            ));
+        }
         manifest = serde_json::from_str(&manifest_str)
             .map_err(|_| PackageError::ManifestInvalid("manifest 顶层必须是对象".into()))?;
     }
@@ -568,7 +620,7 @@ pub fn validate_package_archive(
         .tempdir_in(parent)?;
     let root = tmp_dir.path().to_path_buf();
     let mut expected = HashSet::from(["manifest.json".to_string(), "vectors.npy".to_string()]);
-    for doc in &docs {
+    for doc in docs {
         let h = doc["doc_hash"].as_str().unwrap();
         let ext = Path::new(doc["original_filename"].as_str().unwrap())
             .extension()
@@ -637,7 +689,7 @@ pub fn validate_package_archive(
     }
 
     // 逐份文档校验原始文件哈希、标准化文本行与分块逐字符一致性
-    for doc in &docs {
+    for doc in docs {
         let h = doc["doc_hash"].as_str().unwrap();
         let orig_ext = Path::new(doc["original_filename"].as_str().unwrap())
             .extension()
@@ -663,29 +715,60 @@ pub fn validate_package_archive(
             ));
         }
 
-        let tfile = File::open(&text_path)?;
-        let reader = BufReader::new(tfile);
-        let lines: Vec<String> = reader.lines().collect::<Result<_, _>>()?;
-
-        if lines.len() as i64 != doc["line_count"].as_i64().unwrap() {
+        let mut text = String::new();
+        File::open(&text_path)?
+            .take(MAX_TEXT_BYTES + 1)
+            .read_to_string(&mut text)?;
+        if text.len() as u64 > MAX_TEXT_BYTES {
+            return Err(PackageError::SizeLimitExceeded(
+                "标准化文本实际大小超限".into(),
+            ));
+        }
+        if text.lines().count() as i64 != doc["line_count"].as_i64().unwrap() {
             return Err(PackageError::FileValidationFailed(
                 "标准化原文行数不匹配".into(),
             ));
         }
-
-        if let Some(chunks) = doc.get("chunks").and_then(|v| v.as_array()) {
-            for ch in chunks {
-                let start_l = ch["line_start"].as_i64().unwrap() as usize;
-                let end_l = ch["line_end"].as_i64().unwrap() as usize;
-                let expected_chunk_text = lines[start_l - 1..end_l].join("\n");
-                if ch["text"].as_str().unwrap() != expected_chunk_text {
+        // One pass over borrowed lines. A newline-heavy 4 MiB document must not
+        // allocate millions of Strings (or a second joined copy for every chunk).
+        let mut lines = text.lines().enumerate();
+        let mut current = (0usize, "");
+        for chunk in doc["chunks"].as_array().unwrap() {
+            let start = chunk["line_start"].as_u64().unwrap() as usize;
+            let end = chunk["line_end"].as_u64().unwrap() as usize;
+            let mut expected = chunk["text"].as_str().unwrap().split('\n');
+            for line in start..=end {
+                while current.0 < line {
+                    let Some((number, value)) = lines.next() else {
+                        return Err(PackageError::FileValidationFailed(
+                            "标准化原文行数不足".into(),
+                        ));
+                    };
+                    current = (number + 1, value);
+                }
+                if expected.next() != Some(current.1) {
                     return Err(PackageError::FileValidationFailed(
                         "分块 text 与标准化原文不一致".into(),
                     ));
                 }
             }
+            if expected.next().is_some() {
+                return Err(PackageError::FileValidationFailed(
+                    "分块 text 与标准化原文不一致".into(),
+                ));
+            }
         }
     }
+
+    // Transfer, rather than clone, the potentially 8 MiB document tree.
+    let Value::Array(docs) = manifest
+        .as_object_mut()
+        .unwrap()
+        .remove("documents")
+        .unwrap()
+    else {
+        unreachable!("manifest documents already validated")
+    };
 
     Ok(ValidatedPackage {
         _temp: tmp_dir,

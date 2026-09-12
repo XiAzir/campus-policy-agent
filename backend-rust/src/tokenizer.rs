@@ -10,17 +10,26 @@ static FT_SAFE: LazyLock<Regex> =
 
 /// 针对 FTS 写入的分词：按 jieba 搜索模式切词、去除空白后用单个空格连接
 pub fn tokenize_for_fts(text: &str) -> String {
-    let words = JIEBA.cut_for_search(text, true);
-    let filtered: Vec<&str> = words
+    let mut output = String::with_capacity(text.len());
+    for word in JIEBA
+        .cut_for_search(text, true)
         .into_iter()
-        .map(|w| w.trim())
+        .map(str::trim)
         .filter(|w| !w.is_empty())
-        .collect();
-    filtered.join(" ")
+    {
+        if !output.is_empty() {
+            output.push(' ');
+        }
+        output.push_str(word);
+    }
+    output
 }
 
 /// 针对 FTS 查询的 MATCH 构造：搜索模式切词、去重、过滤非法符号、限制最多 max_tokens 个、用双引号包裹、OR 连接
 pub fn fts_match_query(text: &str, max_tokens: usize) -> String {
+    if max_tokens == 0 || text.trim().is_empty() {
+        return String::new();
+    }
     let words = JIEBA.cut_for_search(text, true);
     let mut tokens: Vec<String> = Vec::new();
 

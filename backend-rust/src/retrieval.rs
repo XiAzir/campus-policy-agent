@@ -1,7 +1,7 @@
 use crate::audience::match_audience;
 use crate::db::DbPool;
 use crate::tokenizer::fts_match_query;
-use crate::vectors::VectorIndex;
+use crate::vectors::{VectorIndex, VectorTopK};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 
@@ -62,41 +62,23 @@ pub async fn allowed_doc_ids(
 
         let mut stmt = conn.prepare(sql)?;
         let mut rows = stmt.query([])?;
-        let mut doc_list = Vec::new();
-        while let Some(r) = rows.next()? {
-            let id: i64 = r.get(0)?;
-            let uid: String = r.get(1)?;
-            let aud_raw: String = r.get(2)?;
-            let scope_raw: String = r.get(3)?;
-
-            let aud = serde_json::from_str(&aud_raw).unwrap_or(serde_json::json!([]));
-            let scope = serde_json::from_str(&scope_raw).unwrap_or(serde_json::json!({}));
-            doc_list.push((id, uid, aud, scope));
-        }
-
-        // 画像过滤
-        if let Some(prof) = &profile {
-            let college = prof.get("college").cloned().unwrap_or_default();
-            let year = prof.get("entry_year").cloned().unwrap_or_default();
-            doc_list.retain(|(_, _, aud, scope)| {
-                let (matched, _) = match_audience(aud, scope, &college, &year);
-                matched
-            });
-        }
-
-        // 显式指定文档过滤
-        if let Some(uids) = &doc_uids {
-            let uid_set: HashSet<&str> = uids.iter().map(|s| s.as_str()).collect();
-            let mut ids = HashSet::new();
-            for (id, uid, _, _) in &doc_list {
-                if uid_set.contains(uid.as_str()) {
-                    ids.insert(*id);
-                }
+        let uid_set: Option<HashSet<&str>> = doc_uids.as_ref()
+            .map(|uids| uids.iter().map(String::as_str).collect());
+        let mut ids = HashSet::new();
+        while let Some(row) = rows.next()? {
+            let id: i64 = row.get(0)?;
+            let uid: String = row.get(1)?;
+            if uid_set.as_ref().is_some_and(|uids| !uids.contains(uid.as_str())) { continue; }
+            if let Some(prof) = &profile {
+                let audience = serde_json::from_str(&row.get::<_, String>(2)?).unwrap_or(serde_json::json!([]));
+                let scope = serde_json::from_str(&row.get::<_, String>(3)?).unwrap_or(serde_json::json!({}));
+                let college = prof.get("college").map(String::as_str).unwrap_or("");
+                let year = prof.get("entry_year").map(String::as_str).unwrap_or("");
+                if !match_audience(&audience, &scope, college, year).0 { continue; }
             }
-            return Ok(ids);
+            ids.insert(id);
         }
-
-        let mut ids: HashSet<i64> = doc_list.into_iter().map(|(id, ..)| id).collect();
+        if doc_uids.is_some() { return Ok(ids); }
 
         // 领域标签过滤
         if let Some(doms) = &domains {
@@ -134,7 +116,12 @@ pub async fn search(
     top_k: usize,
     domains: Option<&[String]>,
 ) -> Result<Vec<SearchHit>, rusqlite::Error> {
-    if query.trim().is_empty() || scope_doc_ids.is_empty() {
+    if top_k > 64 {
+        return Err(rusqlite::Error::InvalidParameterName(
+            "top_k 超过上限 64".into(),
+        ));
+    }
+    if top_k == 0 || query.trim().is_empty() || scope_doc_ids.is_empty() {
         return Ok(Vec::new());
     }
 
@@ -172,7 +159,7 @@ pub async fn search(
                  FROM chunks_fts f JOIN chunks c ON c.id=f.rowid \
                  WHERE chunks_fts MATCH ? AND c.doc_id IN ({}) \
                  {} \
-                 ORDER BY score LIMIT ?",
+                 ORDER BY score, f.rowid LIMIT ?",
                 id_marks, section_clause
             );
 
@@ -196,8 +183,7 @@ pub async fn search(
             }
             Ok(hits)
         })
-        .await
-        .unwrap_or_default()
+        .await?
     } else {
         Vec::new()
     };
@@ -208,8 +194,9 @@ pub async fn search(
         let s_ids = scope_ids_vec.clone();
         let doms = domains_vec.clone();
 
-        let vrows = db
-            .read(move |conn| {
+        let index = vectors.clone();
+        let query = q_vec.to_vec();
+        vec_hits = db.read_cancellable(move |conn, cancelled| {
                 let id_marks = s_ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
                 let section_clause = if !doms.is_empty() {
                     let tags = doms.iter().map(|_| "?").collect::<Vec<_>>().join(",");
@@ -226,7 +213,7 @@ pub async fn search(
                 let sql = format!(
                     "SELECT v.package_id, v.row_index, v.chunk_id \
                      FROM vector_rows v JOIN chunks c ON c.id=v.chunk_id \
-                     WHERE v.doc_id IN ({}) {}",
+                     WHERE v.doc_id IN ({}) {} ORDER BY v.package_id, v.row_index, v.chunk_id",
                     id_marks, section_clause
                 );
 
@@ -239,30 +226,43 @@ pub async fn search(
                     params_vec.push(d);
                 }
 
+
                 let mut rows = stmt.query(&params_vec[..])?;
-                let mut list = Vec::new();
-                while let Some(r) = rows.next()? {
-                    list.push((r.get::<_, i64>(0)?, r.get::<_, i64>(1)? as usize, r.get::<_, i64>(2)?));
+                let mut top = VectorTopK::new(top_k * TOP_K_FTS_FACTOR);
+                let mut package = None;
+                let mut batch_rows = Vec::with_capacity(512);
+                let mut batch_chunks = Vec::with_capacity(512);
+                let mut flush = |pkg, ids: &mut Vec<usize>, chunks: &mut Vec<i64>| -> Result<(), rusqlite::Error> {
+                    if cancelled.load(std::sync::atomic::Ordering::Relaxed) {
+                        return Err(rusqlite::Error::SqliteFailure(rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_INTERRUPT), None));
+                    }
+                    if !ids.is_empty() {
+                        index.scan_package(pkg, &query, ids, |score, row| {
+                            let position = ids.binary_search(&row).expect("validated batch row");
+                            top.push(score, pkg, row, chunks[position]);
+                        }).map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
+                        ids.clear();
+                        chunks.clear();
+                    }
+                    Ok(())
+                };
+                while let Some(row) = rows.next()? {
+                    let pkg: i64 = row.get(0)?;
+                    let raw: i64 = row.get(1)?;
+                    let index = usize::try_from(raw).map_err(|_| rusqlite::Error::InvalidQuery)?;
+                    if let Some(previous) = package
+                        && (previous != pkg || batch_rows.len() >= 512)
+                    {
+                        flush(previous, &mut batch_rows, &mut batch_chunks)?;
+                    }
+                    if batch_rows.last() == Some(&index) { return Err(rusqlite::Error::InvalidQuery); }
+                    package = Some(pkg);
+                    batch_rows.push(index);
+                    batch_chunks.push(row.get::<_, i64>(2)?);
                 }
-                Ok(list)
-            })
-            .await
-            .unwrap_or_default();
-
-        let mut candidates: HashMap<i64, Vec<usize>> = HashMap::new();
-        let mut by_row: HashMap<(i64, usize), i64> = HashMap::new();
-        for (pkg_id, row_idx, chunk_id) in vrows {
-            candidates.entry(pkg_id).or_default().push(row_idx);
-            by_row.insert((pkg_id, row_idx), chunk_id);
-        }
-
-        if let Ok(top_vector_hits) = vectors.search(q_vec, &candidates, top_k * TOP_K_FTS_FACTOR) {
-            for (_sim, pkg_id, row_idx) in top_vector_hits {
-                if let Some(&cid) = by_row.get(&(pkg_id, row_idx)) {
-                    vec_hits.push((cid, 1.0));
-                }
-            }
-        }
+                if let Some(pkg) = package { flush(pkg, &mut batch_rows, &mut batch_chunks)?; }
+                Ok(top.finish().into_iter().map(|(_, _, _, chunk)| (chunk, 1.0)).collect())
+        }).await?;
     }
 
     // 3. RRF 排名融合
@@ -278,7 +278,7 @@ pub async fn search(
 
     let mut ordered: Vec<(i64, f64)> = scores.into_iter().collect();
     // 降序排序，分高在前
-    ordered.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+    ordered.sort_by(|a, b| b.1.total_cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
     ordered.truncate(top_k);
 
     if ordered.is_empty() {
@@ -287,7 +287,6 @@ pub async fn search(
 
     // 4. 填充分块与文档详细信息
     let ordered_cids: Vec<i64> = ordered.iter().map(|(cid, _)| *cid).collect();
-    let s_ids = scope_ids_vec.clone();
 
     db.read(move |conn| {
         let chunk_marks = ordered_cids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
@@ -322,6 +321,9 @@ pub async fn search(
             );
         }
 
+        // Fetch only metadata for winning chunks, not the entire allowed corpus.
+        let s_ids: HashSet<i64> = chunks_map.values().map(|ch| ch.doc_id).collect();
+        if s_ids.is_empty() { return Ok(Vec::new()); }
         let doc_marks = s_ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
         let doc_sql = format!(
             "SELECT id, doc_uid, doc_hash, title, doc_type, effective_date, audience, audience_scope, page_map \

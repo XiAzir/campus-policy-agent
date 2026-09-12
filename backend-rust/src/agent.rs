@@ -8,8 +8,6 @@ use regex::Regex;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::collections::{HashMap, HashSet};
-use std::fs::File;
-use std::io::{BufRead, BufReader};
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -73,6 +71,7 @@ impl Agent {
         let gemini = GeminiClient::new(&config);
         let http_client = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(60))
+            .redirect(reqwest::redirect::Policy::none())
             .build()
             .unwrap_or_default();
 
@@ -93,6 +92,7 @@ impl Agent {
     ) -> Self {
         let http_client = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(60))
+            .redirect(reqwest::redirect::Policy::none())
             .build()
             .unwrap_or_default();
 
@@ -105,30 +105,18 @@ impl Agent {
         }
     }
 
-    fn read_lines_from_disk(&self, doc_hash: &str, line_start: i64, line_end: i64) -> Vec<String> {
-        let txt_path = self
+    async fn read_lines_from_disk(
+        &self,
+        doc_hash: &str,
+        line_start: i64,
+        line_end: i64,
+    ) -> std::io::Result<Vec<String>> {
+        let path = self
             .config
             .data_dir
             .join("text")
-            .join(format!("{}.txt", doc_hash));
-        let Ok(file) = File::open(txt_path) else {
-            return Vec::new();
-        };
-
-        let reader = BufReader::new(file);
-        let mut lines = Vec::new();
-        for (idx, line_res) in reader.lines().enumerate() {
-            let current_line = (idx + 1) as i64;
-            let within_interval = current_line >= line_start && current_line <= line_end;
-            let valid_text = line_res.ok();
-            if let (true, Some(l)) = (within_interval, valid_text) {
-                lines.push(l);
-            }
-            if current_line > line_end {
-                break;
-            }
-        }
-        lines
+            .join(format!("{doc_hash}.txt"));
+        crate::text::read_lines(path, line_start, line_end).await
     }
 
     pub async fn tool_policy_search(
@@ -297,8 +285,11 @@ impl Agent {
         )
         .await;
 
-        let allowed = allowed_res.unwrap_or_default();
-        let hits: Vec<SearchHit> = search(
+        let allowed = match allowed_res {
+            Ok(allowed) => allowed,
+            Err(_) => return json!({"error": "资料库读取失败，请重试；不能据此推断没有相关政策"}),
+        };
+        let hits: Vec<SearchHit> = match search(
             &self.db,
             &self.vectors,
             query,
@@ -312,7 +303,12 @@ impl Agent {
             },
         )
         .await
-        .unwrap_or_default();
+        {
+            Ok(hits) => hits,
+            Err(_) => {
+                return json!({"error": "检索数据不可用，请联系管理员检查索引；不能据此推断没有相关政策"});
+            }
+        };
 
         if let Some(m) = metrics {
             m.add_retrieval_seconds(start_time.elapsed().as_secs_f64());
@@ -404,7 +400,7 @@ impl Agent {
             std::mem::swap(&mut line_start, &mut line_end);
         }
         line_start = line_start.max(1);
-        line_end = line_end.min(line_start + MAX_READ_LINES - 1);
+        line_end = line_end.min(line_start.saturating_add(MAX_READ_LINES - 1));
 
         let uid_clone = doc_uid.clone();
         let doc_row = self
@@ -492,7 +488,15 @@ impl Agent {
             }
         }
 
-        let lines = self.read_lines_from_disk(&doc_hash, line_start, line_end);
+        let lines = match self
+            .read_lines_from_disk(&doc_hash, line_start, line_end)
+            .await
+        {
+            Ok(lines) => lines,
+            Err(_) => {
+                return json!({"error": "标准化原文暂不可读，请缩小范围或联系管理员；不能据此推断政策内容"});
+            }
+        };
         let page_map: Option<Vec<[i64; 2]>> =
             page_map_raw.and_then(|s| serde_json::from_str(&s).ok());
         let page = page_for_line(&page_map, line_start);
@@ -902,8 +906,14 @@ impl Agent {
                 .await
                 .unwrap_or(None);
 
-            let quote_end = (e.line_start + 9).min(e.line_end);
-            let quote = self.read_lines_from_disk(&e.doc_hash, e.line_start, quote_end);
+            let quote_end = e.line_start.saturating_add(9).min(e.line_end);
+            let quote = match self
+                .read_lines_from_disk(&e.doc_hash, e.line_start, quote_end)
+                .await
+            {
+                Ok(lines) => lines,
+                Err(_) => continue, // Never manufacture an unreadable quotation.
+            };
 
             citations.push(Citation {
                 evidence_id: eid,

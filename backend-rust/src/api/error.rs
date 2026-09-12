@@ -58,3 +58,22 @@ impl IntoResponse for ApiError {
         (self.status, body).into_response()
     }
 }
+
+/// Keep malformed/missing JSON fields in the API's documented JSON error envelope.
+pub struct RequestJson<T>(pub T);
+impl<S, T> axum::extract::FromRequest<S> for RequestJson<T>
+where
+    S: Send + Sync,
+    T: serde::de::DeserializeOwned,
+{
+    type Rejection = ApiError;
+    async fn from_request(
+        request: axum::extract::Request,
+        state: &S,
+    ) -> Result<Self, Self::Rejection> {
+        axum::Json::<T>::from_request(request, state)
+            .await
+            .map(|axum::Json(value)| Self(value))
+            .map_err(|rejection| ApiError::new(rejection.status(), "JSON 请求格式或字段类型不正确"))
+    }
+}

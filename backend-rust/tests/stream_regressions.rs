@@ -180,3 +180,127 @@ async fn queue_enforces_byte_budget_and_rejects_single_oversize_event() {
     }
     assert_eq!(rx.recv().await.unwrap()["event"], "__end__");
 }
+
+#[tokio::test]
+async fn too_many_parts_and_oversized_context_are_rejected() {
+    let event = format!(
+        "data: {}\n\n",
+        json!({"candidates":[{"content":{"parts": vec![json!({"text":""}); 4097]}}]})
+    );
+    assert!(
+        collect(vec![event.into_bytes()])
+            .await
+            .unwrap_err()
+            .contains("parts")
+    );
+    let event = format!(
+        "data: {}\n\n",
+        json!({"candidates":[{"content":{"parts":[{"text":"x".repeat(800_000), "thought":true}]}}]})
+    );
+    assert!(
+        collect(vec![event.as_bytes().to_vec(); 3])
+            .await
+            .unwrap_err()
+            .contains("2 MiB")
+    );
+}
+
+#[tokio::test]
+async fn embeddings_are_bounded_and_normalize_small_and_large_values() {
+    use campus_policy_backend::{config::Config, llm::embed_query};
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let app = axum::Router::new()
+        .route(
+            "/small/embeddings",
+            axum::routing::post(|| async {
+                axum::Json(json!({"data":[{"embedding":[1e-30,0.0]}]}))
+            }),
+        )
+        .route(
+            "/large/embeddings",
+            axum::routing::post(|| async {
+                axum::Json(json!({"data":[{"embedding":[3e38,3e38]}]}))
+            }),
+        )
+        .route(
+            "/bomb/embeddings",
+            axum::routing::post(|| async {
+                axum::body::Body::from_stream(futures_util::stream::iter(
+                    (0..20).map(|_| Ok::<_, std::io::Error>(vec![b' '; 64 * 1024])),
+                ))
+            }),
+        );
+    let server = tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+    let client = reqwest::Client::new();
+    let mut config = Config::from_env(None);
+    config.embed_dims = 2;
+    for name in ["small", "large"] {
+        config.siliconflow_base_url = format!("http://{addr}/{name}");
+        let vector = embed_query(&client, &config, "test", None, None)
+            .await
+            .unwrap();
+        let norm: f32 = vector.iter().map(|v| v * v).sum();
+        assert!((norm - 1.0).abs() < 1e-5);
+    }
+    config.siliconflow_base_url = format!("http://{addr}/bomb");
+    assert!(
+        embed_query(&client, &config, "test", None, None)
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("1 MiB")
+    );
+    assert!(
+        embed_query(&client, &config, "test", Some(usize::MAX), None)
+            .await
+            .is_err()
+    );
+    server.abort();
+    let _ = server.await;
+}
+
+#[tokio::test]
+async fn production_gemini_client_does_not_forward_keys_through_redirects() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let visited = Arc::new(AtomicBool::new(false));
+    let mark = visited.clone();
+    let app = axum::Router::new()
+        .route(
+            "/models/{action}",
+            axum::routing::post(move || async move {
+                axum::response::Redirect::temporary(&format!("http://{addr}/leak"))
+            }),
+        )
+        .route(
+            "/leak",
+            axum::routing::post(move || {
+                let mark = mark.clone();
+                async move {
+                    mark.store(true, Ordering::Relaxed);
+                    "unexpected"
+                }
+            }),
+        );
+    let server = tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+    let mut config = campus_policy_backend::config::Config::from_env(None);
+    config.gemini_base_url = format!("http://{addr}");
+    config.gemini_api_key = "synthetic-test-key".into();
+    config.gemini_model = "test".into();
+    let client = GeminiClient::new(&config);
+    assert!(
+        client
+            .stream(vec![], None, None, 0.2, None, |_| Box::pin(async {}))
+            .await
+            .is_err()
+    );
+    assert!(!visited.load(Ordering::Relaxed));
+    server.abort();
+    let _ = server.await;
+}

@@ -78,6 +78,9 @@ impl TokenService {
     pub fn from_hex_secret(secret_hex: &str, ttl_days: i64) -> Result<Self, String> {
         let key =
             hex::decode(secret_hex).map_err(|e| format!("token_secret 并非合法 hex: {}", e))?;
+        if key.len() != 32 || !(1..=3650).contains(&ttl_days) {
+            return Err("token_secret 必须为 32 字节且令牌有效期必须为 1..3650 天".into());
+        }
         Ok(Self { key, ttl_days })
     }
 
@@ -87,7 +90,7 @@ impl TokenService {
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
             .as_secs() as i64;
-        let exp = now_sec + self.ttl_days * 86400;
+        let exp = now_sec.saturating_add(self.ttl_days.saturating_mul(86400));
 
         let payload = TokenPayload {
             r: role.to_string(),

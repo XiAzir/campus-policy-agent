@@ -1,3 +1,4 @@
+mod common;
 use campus_policy_backend::api::{AppState, create_router};
 use campus_policy_backend::auth::{RateLimiter, TokenService};
 use campus_policy_backend::backup;
@@ -22,18 +23,8 @@ fn setup_test_data_dir(name: &str) -> (PathBuf, PathBuf) {
     let data_dir = tmp.join("data");
     fs::create_dir_all(&data_dir).unwrap();
 
-    // 拷贝 legacy 数据到测试目录
-    let legacy_src = Path::new("tests/fixtures/legacy_data");
-    for entry in fs::read_dir(legacy_src).unwrap() {
-        let entry = entry.unwrap();
-        let path = entry.path();
-        let target = data_dir.join(entry.file_name());
-        if path.is_dir() {
-            copy_dir_all(&path, &target);
-        } else {
-            fs::copy(&path, &target).unwrap();
-        }
-    }
+    let fixture = common::fixture_copy();
+    copy_dir_all(fixture.path(), &data_dir);
 
     (tmp, data_dir)
 }

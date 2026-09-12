@@ -4,9 +4,9 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::mpsc::{SyncSender, sync_channel};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::thread;
+use tokio::sync::mpsc::{Sender, channel};
 
 pub const SCHEMA: &str = r#"
 CREATE TABLE IF NOT EXISTS settings (
@@ -93,6 +93,7 @@ CREATE TABLE IF NOT EXISTS vector_rows (
   package_id INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_vector_rows_doc ON vector_rows(doc_id);
+CREATE INDEX IF NOT EXISTS idx_vector_rows_package_row ON vector_rows(package_id, row_index);
 
 CREATE TABLE IF NOT EXISTS audit_log (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -118,6 +119,10 @@ fn open_connection(path: &Path, readonly: bool) -> Result<Connection> {
         Connection::open(path)?
     };
 
+    conn.set_limit(
+        rusqlite::limits::Limit::SQLITE_LIMIT_LENGTH,
+        8 * 1024 * 1024,
+    )?;
     conn.execute_batch(
         "PRAGMA journal_mode = WAL;
          PRAGMA foreign_keys = ON;
@@ -135,10 +140,53 @@ enum JobMessage {
     Close(tokio::sync::oneshot::Sender<Result<()>>),
 }
 
+fn spawn_worker(
+    path: &Path,
+    readonly: bool,
+    cap: usize,
+    name: String,
+) -> Result<Sender<JobMessage>> {
+    let initial = open_connection(path, readonly)?;
+    let (tx, mut rx) = channel(cap);
+    thread::Builder::new()
+        .name(name)
+        .spawn(move || {
+            let mut connection = Some(initial);
+            while let Some(message) = rx.blocking_recv() {
+                match message {
+                    JobMessage::Execute(job) => {
+                        if let Some(conn) = &mut connection {
+                            // A failed request must not permanently destroy a database worker.
+                            let result =
+                                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                                    job(conn)
+                                }));
+                            if result.is_err() && !conn.is_autocommit() {
+                                let _ = conn.execute_batch("ROLLBACK");
+                            }
+                        }
+                    }
+                    JobMessage::Close(reply) => {
+                        connection = None;
+                        let _ = reply.send(Ok(()));
+                    }
+                    JobMessage::Reopen(path, reply) => {
+                        connection = None;
+                        let result =
+                            open_connection(&path, readonly).map(|conn| connection = Some(conn));
+                        let _ = reply.send(result);
+                    }
+                }
+            }
+        })
+        .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
+    Ok(tx)
+}
+
 #[derive(Clone)]
 pub struct DbPool {
-    writer_tx: SyncSender<JobMessage>,
-    reader_txs: Vec<SyncSender<JobMessage>>,
+    writer_tx: Sender<JobMessage>,
+    reader_txs: Vec<Sender<JobMessage>>,
     reader_cursor: Arc<AtomicUsize>,
     pub path: PathBuf,
 }
@@ -146,6 +194,11 @@ pub struct DbPool {
 impl DbPool {
     /// 初始化 SQLite 线程池：1 写线程 + max_readers 读线程（建议 2）
     pub fn new(path: &Path, max_readers: usize, queue_cap: usize) -> Result<Self> {
+        if !(1..=8).contains(&max_readers) || !(1..=1024).contains(&queue_cap) {
+            return Err(rusqlite::Error::InvalidParameterName(
+                "数据库线程或队列上限无效".into(),
+            ));
+        }
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent).ok();
         }
@@ -166,82 +219,16 @@ impl DbPool {
             }
         }
 
-        // 启动写工作线程（1个，队列上限 queue_cap）
-        let (writer_tx, writer_rx) = sync_channel::<JobMessage>(queue_cap);
-        let write_path = path.to_path_buf();
-        thread::Builder::new()
-            .name("sqlite-writer".to_string())
-            .spawn(move || {
-                let mut current_path = write_path;
-                let mut conn_opt = open_connection(&current_path, false).ok();
-                while let Ok(msg) = writer_rx.recv() {
-                    match msg {
-                        JobMessage::Execute(job) => {
-                            if let Some(ref mut conn) = conn_opt {
-                                job(conn);
-                            }
-                        }
-                        JobMessage::Reopen(new_path, resp_tx) => {
-                            current_path = new_path;
-                            conn_opt = None;
-                            match open_connection(&current_path, false) {
-                                Ok(new_conn) => {
-                                    conn_opt = Some(new_conn);
-                                    let _ = resp_tx.send(Ok(()));
-                                }
-                                Err(e) => {
-                                    let _ = resp_tx.send(Err(e));
-                                }
-                            }
-                        }
-                        JobMessage::Close(resp_tx) => {
-                            conn_opt = None;
-                            let _ = resp_tx.send(Ok(()));
-                        }
-                    }
-                }
-            })
-            .expect("创建写线程失败");
-
-        // 启动读工作线程（max_readers 个，只读连接）
+        // Open synchronously first: startup failure must not create a pool of dead workers.
+        let writer_tx = spawn_worker(path, false, queue_cap, "sqlite-writer".into())?;
         let mut reader_txs = Vec::with_capacity(max_readers);
         for i in 0..max_readers {
-            let (rtx, rrx) = sync_channel::<JobMessage>(queue_cap);
-            reader_txs.push(rtx);
-            let read_path = path.to_path_buf();
-            thread::Builder::new()
-                .name(format!("sqlite-reader-{}", i))
-                .spawn(move || {
-                    let mut current_path = read_path;
-                    let mut conn_opt = open_connection(&current_path, true).ok();
-                    while let Ok(msg) = rrx.recv() {
-                        match msg {
-                            JobMessage::Execute(job) => {
-                                if let Some(ref mut conn) = conn_opt {
-                                    job(conn);
-                                }
-                            }
-                            JobMessage::Reopen(new_path, resp_tx) => {
-                                current_path = new_path;
-                                conn_opt = None;
-                                match open_connection(&current_path, true) {
-                                    Ok(new_conn) => {
-                                        conn_opt = Some(new_conn);
-                                        let _ = resp_tx.send(Ok(()));
-                                    }
-                                    Err(e) => {
-                                        let _ = resp_tx.send(Err(e));
-                                    }
-                                }
-                            }
-                            JobMessage::Close(resp_tx) => {
-                                conn_opt = None;
-                                let _ = resp_tx.send(Ok(()));
-                            }
-                        }
-                    }
-                })
-                .expect("创建读线程失败");
+            reader_txs.push(spawn_worker(
+                path,
+                true,
+                queue_cap,
+                format!("sqlite-reader-{i}"),
+            )?);
         }
 
         Ok(Self {
@@ -255,17 +242,21 @@ impl DbPool {
     /// 关闭所有数据库连接（释放文件句柄）
     pub async fn close(&self) -> Result<()> {
         let (tx, rx) = tokio::sync::oneshot::channel();
-        self.writer_tx.send(JobMessage::Close(tx)).map_err(|_| {
-            rusqlite::Error::SqliteFailure(
-                rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_BUSY),
-                Some("写连接已关闭".to_string()),
-            )
-        })?;
+        self.writer_tx
+            .send(JobMessage::Close(tx))
+            .await
+            .map_err(|_| {
+                rusqlite::Error::SqliteFailure(
+                    rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_BUSY),
+                    Some("写连接已关闭".to_string()),
+                )
+            })?;
         rx.await.map_err(|_| rusqlite::Error::InvalidQuery)??;
 
         for rtx in &self.reader_txs {
             let (tx, rx) = tokio::sync::oneshot::channel();
             rtx.send(JobMessage::Close(tx))
+                .await
                 .map_err(|_| rusqlite::Error::InvalidQuery)?;
             rx.await.map_err(|_| rusqlite::Error::InvalidQuery)??;
         }
@@ -281,6 +272,7 @@ impl DbPool {
         let (tx, rx) = tokio::sync::oneshot::channel();
         self.writer_tx
             .send(JobMessage::Reopen(target_path.clone(), tx))
+            .await
             .map_err(|_| {
                 rusqlite::Error::SqliteFailure(
                     rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_BUSY),
@@ -297,6 +289,7 @@ impl DbPool {
         for rtx in &self.reader_txs {
             let (tx, rx) = tokio::sync::oneshot::channel();
             rtx.send(JobMessage::Reopen(target_path.clone(), tx))
+                .await
                 .map_err(|_| {
                     rusqlite::Error::SqliteFailure(
                         rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_BUSY),
@@ -325,14 +318,17 @@ impl DbPool {
         let sender = self.reader_txs[idx].clone();
 
         let job = Box::new(move |conn: &mut Connection| {
-            let res = f(conn);
-            let _ = result_tx.send(res);
+            // A cancelled read has no side effects and need not occupy a worker.
+            if !result_tx.is_closed() {
+                let res = f(conn);
+                let _ = result_tx.send(res);
+            }
         });
 
-        sender.send(JobMessage::Execute(job)).map_err(|_| {
+        sender.try_send(JobMessage::Execute(job)).map_err(|_| {
             rusqlite::Error::SqliteFailure(
                 rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_BUSY),
-                Some("数据库读通道断开".to_string()),
+                Some("数据库读队列已满或关闭".to_string()),
             )
         })?;
 
@@ -342,6 +338,23 @@ impl DbPool {
                 Some("读任务应答失败".to_string()),
             )
         })?
+    }
+
+    /// Cancellation of a long read is observed between bounded batches.
+    pub async fn read_cancellable<T, F>(&self, f: F) -> Result<T>
+    where
+        T: Send + 'static,
+        F: FnOnce(&Connection, &AtomicBool) -> Result<T> + Send + 'static,
+    {
+        struct CancelOnDrop(Arc<AtomicBool>);
+        impl Drop for CancelOnDrop {
+            fn drop(&mut self) {
+                self.0.store(true, Ordering::Relaxed);
+            }
+        }
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let _guard = CancelOnDrop(cancelled.clone());
+        self.read(move |connection| f(connection, &cancelled)).await
     }
 
     /// 执行写操作
@@ -358,10 +371,10 @@ impl DbPool {
             let _ = result_tx.send(res);
         });
 
-        sender.send(JobMessage::Execute(job)).map_err(|_| {
+        sender.try_send(JobMessage::Execute(job)).map_err(|_| {
             rusqlite::Error::SqliteFailure(
                 rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_BUSY),
-                Some("数据库写通道断开".to_string()),
+                Some("数据库写队列已满或关闭".to_string()),
             )
         })?;
 
@@ -403,11 +416,12 @@ impl DbPool {
     /// 写入审计日志（不记正文与密钥）
     pub async fn audit(&self, actor: String, action: String, detail: String) -> Result<()> {
         let now = utcnow();
-        let truncated_detail = if detail.len() > 500 {
-            detail[..500].to_string()
-        } else {
-            detail
-        };
+        let mut truncated_detail = detail;
+        let mut end = truncated_detail.len().min(500);
+        while !truncated_detail.is_char_boundary(end) {
+            end -= 1;
+        }
+        truncated_detail.truncate(end);
         self.write(move |conn| {
             conn.execute(
                 "INSERT INTO audit_log(at,actor,action,detail) VALUES(?,?,?,?)",

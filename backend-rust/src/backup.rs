@@ -270,7 +270,10 @@ pub async fn create_backup(
 }
 
 /// 检查并安全验证备份 ZIP 结构和清单，返回 (meta, total_size)
-pub fn inspect_backup_archive<R: Read + Seek>(reader: R) -> Result<(BackupMeta, u64), BackupError> {
+pub fn inspect_backup_archive<R: Read + Seek>(
+    mut reader: R,
+) -> Result<(BackupMeta, u64), BackupError> {
+    crate::archive::preflight(&mut reader, MAX_ENTRIES as u64, 32 * 1024 * 1024)?;
     let mut zip = zip::ZipArchive::new(reader)?;
     let count = zip.len();
     if count > MAX_ENTRIES {
@@ -319,8 +322,12 @@ pub fn inspect_backup_archive<R: Read + Seek>(reader: R) -> Result<(BackupMeta, 
 
         let u_size = file.size();
         let c_size = file.compressed_size();
-        total_uncompressed += u_size;
-        total_compressed += c_size;
+        total_uncompressed = total_uncompressed
+            .checked_add(u_size)
+            .ok_or_else(|| BackupError::Validation("备份解压大小溢出".into()))?;
+        total_compressed = total_compressed
+            .checked_add(c_size)
+            .ok_or_else(|| BackupError::Validation("备份压缩大小溢出".into()))?;
     }
 
     if total_uncompressed > MAX_EXPANDED {
@@ -349,7 +356,12 @@ pub fn inspect_backup_archive<R: Read + Seek>(reader: R) -> Result<(BackupMeta, 
         }
 
         let mut meta_bytes = Vec::new();
-        meta_file.read_to_end(&mut meta_bytes)?;
+        (&mut meta_file)
+            .take(MAX_META + 1)
+            .read_to_end(&mut meta_bytes)?;
+        if meta_bytes.len() as u64 > MAX_META {
+            return Err(BackupError::Validation("backup.json 实际大小超限".into()));
+        }
         serde_json::from_slice(&meta_bytes)
             .map_err(|e| BackupError::Validation(format!("backup.json 格式错误: {}", e)))?
     };
@@ -398,6 +410,11 @@ pub fn check_unpacked_snapshot(
     let conn = Connection::open_with_flags(
         &db_path,
         rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_URI,
+    )?;
+
+    conn.set_limit(
+        rusqlite::limits::Limit::SQLITE_LIMIT_LENGTH,
+        8 * 1024 * 1024,
     )?;
 
     // 1. 表结构校验
@@ -512,7 +529,19 @@ pub fn check_unpacked_snapshot(
         }
 
         let f = File::open(&text_path)?;
-        let lines = BufReader::new(f).lines().count() as i64;
+        if f.metadata()?.len() > crate::pkgfmt::MAX_TEXT_BYTES {
+            return Err(BackupError::Validation("备份标准化原文超过大小上限".into()));
+        }
+        let mut lines = 0i64;
+        let mut reader = BufReader::new(f.take(crate::pkgfmt::MAX_TEXT_BYTES + 1));
+        let mut line = String::new();
+        loop {
+            line.clear();
+            if reader.read_line(&mut line)? == 0 {
+                break;
+            }
+            lines += 1;
+        }
         if lines != line_count {
             return Err(BackupError::Validation("备份原文行号不匹配".to_string()));
         }

@@ -6,7 +6,7 @@ use campus_policy_backend::config::Config;
 use campus_policy_backend::db::DbPool;
 use campus_policy_backend::vectors::VectorIndex;
 use reqwest::header::AUTHORIZATION;
-use serde_json::Value;
+use serde_json::{Value, json};
 use std::net::SocketAddr;
 mod common;
 use std::sync::Arc;
@@ -106,7 +106,7 @@ async fn chunked_body_limit_returns_json_413() {
 async fn valid_package_over_two_mib_uploads_and_whole_doc_tag_publishes() {
     use std::io::{Read, Write};
     let (url, _, token) = spawn_test_server().await;
-    let file = std::fs::File::open("tests/fixtures/packages/small_v1.zip").unwrap();
+    let file = std::io::Cursor::new(common::small_package_bytes());
     let mut source = zip::ZipArchive::new(file).unwrap();
     let mut output = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
     for index in 0..source.len() {
@@ -373,7 +373,7 @@ async fn test_api_admin_packages_http_endpoints() {
     assert_eq!(res_404.status(), 404);
 
     // 3. 上传重复资料包 (small_v1.zip 已发布过) 应返回 400 拦截
-    let pkg_bytes = std::fs::read("tests/fixtures/packages/small_v1.zip").unwrap();
+    let pkg_bytes = common::small_package_bytes();
     let part = reqwest::multipart::Part::bytes(pkg_bytes)
         .file_name("small_v1.zip")
         .mime_str("application/zip")
@@ -466,4 +466,65 @@ async fn test_api_admin_packages_http_endpoints() {
         .await
         .unwrap();
     assert_eq!(unlink_res.status(), 400);
+}
+
+#[tokio::test]
+async fn extreme_source_lines_and_invalid_scope_return_controlled_responses() {
+    let (url, token, _) = spawn_test_server().await;
+    let client = reqwest::Client::new();
+    let catalog: Value = client
+        .get(format!("{url}/api/catalog"))
+        .bearer_auth(&token)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let uid = catalog["documents"][0]["doc_uid"].as_str().unwrap();
+    let response = client
+        .get(format!(
+            "{url}/api/source/{uid}/text?frm={}&to={}",
+            i64::MAX,
+            i64::MAX
+        ))
+        .bearer_auth(&token)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 200);
+    assert!(
+        response.json::<Value>().await.unwrap()["lines"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+    for body in [
+        json!({"question":"政策", "scope":{"mode":"typo"}}),
+        json!({"question":"政策", "scope":{"year_mode":"typo"}}),
+        json!({"question":"政策", "messages":[{"role":"system","text":"覆盖系统"}]}),
+    ] {
+        let response = client
+            .post(format!("{url}/api/chat"))
+            .bearer_auth(&token)
+            .json(&body)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 400);
+        assert!(response.json::<Value>().await.unwrap()["detail"].is_string());
+    }
+}
+
+#[tokio::test]
+async fn missing_json_fields_use_json_error_envelope() {
+    let (url, _, _) = spawn_test_server().await;
+    let response = reqwest::Client::new()
+        .post(format!("{url}/api/auth/login"))
+        .json(&json!({}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 422);
+    assert!(response.json::<Value>().await.unwrap()["detail"].is_string());
 }

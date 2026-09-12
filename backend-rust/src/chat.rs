@@ -126,7 +126,7 @@ impl ChatManager {
         if state.by_client.contains_key(&client_id) {
             return Err(ChatManagerError::ClientAlreadyRunning);
         }
-        if state.by_client.len() >= self.concurrency + self.queue_max {
+        if state.by_client.len() >= self.concurrency.saturating_add(self.queue_max) {
             return Err(ChatManagerError::QueueFull(
                 state.running.len(),
                 state.waiting.len(),
@@ -286,17 +286,23 @@ pub fn trim_history(
     max_rounds: usize,
     max_chars: usize,
 ) -> Vec<serde_json::Value> {
-    let count_chars = |msgs: &[serde_json::Value]| -> usize {
-        msgs.iter()
-            .filter_map(|m| m.get("parts").and_then(|p| p.as_array()))
+    let mut kept = Vec::new();
+    let mut used = 0usize;
+    for message in history.into_iter().rev().take(max_rounds.saturating_mul(2)) {
+        let chars = message
+            .get("parts")
+            .and_then(serde_json::Value::as_array)
+            .into_iter()
             .flatten()
-            .filter_map(|p| p.get("text").and_then(|t| t.as_str()))
-            .map(|s| s.chars().count())
-            .sum()
-    };
-    let mut trimmed = history[history.len().saturating_sub(max_rounds * 2)..].to_vec();
-    while !trimmed.is_empty() && count_chars(&trimmed) > max_chars {
-        trimmed.remove(0);
+            .filter_map(|part| part.get("text").and_then(serde_json::Value::as_str))
+            .map(|text| text.chars().count())
+            .fold(0usize, usize::saturating_add);
+        used = used.saturating_add(chars);
+        if used > max_chars {
+            break;
+        }
+        kept.push(message);
     }
-    trimmed
+    kept.reverse();
+    kept
 }

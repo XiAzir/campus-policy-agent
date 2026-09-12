@@ -1,10 +1,11 @@
+mod common;
 use campus_policy_backend::config::Config;
 use campus_policy_backend::db::DbPool;
 use campus_policy_backend::ingest;
 use serde_json::json;
 use std::collections::HashMap;
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 fn setup_test_env(test_name: &str) -> (DbPool, Config, PathBuf) {
     let base_tmp = std::env::temp_dir().join(format!("cpa-rust-test-{}", test_name));
@@ -29,7 +30,8 @@ fn setup_test_env(test_name: &str) -> (DbPool, Config, PathBuf) {
 #[tokio::test]
 async fn test_ingest_duplicate_import_rejected() {
     let (db, config, _tmp) = setup_test_env("dup");
-    let pkg_zip = Path::new("tests/fixtures/packages/small_v1.zip");
+    let fixture = common::small_package();
+    let pkg_zip = fixture.path();
     assert!(pkg_zip.exists());
 
     let pid1 = ingest::import_package(&db, &config, pkg_zip, "small_v1.zip")
@@ -47,7 +49,8 @@ async fn test_ingest_duplicate_import_rejected() {
 #[tokio::test]
 async fn test_ingest_preview_and_meta_override() {
     let (db, config, _tmp) = setup_test_env("prev_ov");
-    let pkg_zip = Path::new("tests/fixtures/packages/small_v1.zip");
+    let fixture = common::small_package();
+    let pkg_zip = fixture.path();
 
     let pid = ingest::import_package(&db, &config, pkg_zip, "small_v1.zip")
         .await
@@ -98,7 +101,8 @@ async fn test_ingest_preview_and_meta_override() {
 #[tokio::test]
 async fn test_ingest_publish_and_versions_lifecycle() {
     let (db, config, _tmp) = setup_test_env("pub_lifecycle");
-    let pkg_zip = Path::new("tests/fixtures/packages/small_v1.zip");
+    let fixture = common::small_package();
+    let pkg_zip = fixture.path();
 
     let pid = ingest::import_package(&db, &config, pkg_zip, "small_v1.zip")
         .await
@@ -151,7 +155,8 @@ async fn test_ingest_publish_and_versions_lifecycle() {
 #[tokio::test]
 async fn test_ingest_discard_draft() {
     let (db, config, _tmp) = setup_test_env("discard");
-    let pkg_zip = Path::new("tests/fixtures/packages/small_v1.zip");
+    let fixture = common::small_package();
+    let pkg_zip = fixture.path();
 
     let pid = ingest::import_package(&db, &config, pkg_zip, "small_v1.zip")
         .await
@@ -193,7 +198,8 @@ async fn test_ingest_path_traversal_zip_rejected() {
 #[tokio::test]
 async fn test_ingest_bad_target_publish_rejected() {
     let (db, config, _tmp) = setup_test_env("bad_target");
-    let pkg_zip = Path::new("tests/fixtures/packages/small_v1.zip");
+    let fixture = common::small_package();
+    let pkg_zip = fixture.path();
 
     let pid = ingest::import_package(&db, &config, pkg_zip, "small_v1.zip")
         .await
@@ -219,14 +225,10 @@ async fn test_ingest_bad_target_publish_rejected() {
 #[tokio::test]
 async fn publish_failure_keeps_draft_and_removes_new_files() {
     let (db, config, _tmp) = setup_test_env("publish_rollback");
-    let pid = ingest::import_package(
-        &db,
-        &config,
-        Path::new("tests/fixtures/packages/small_v1.zip"),
-        "small.zip",
-    )
-    .await
-    .unwrap();
+    let fixture = common::small_package();
+    let pid = ingest::import_package(&db, &config, fixture.path(), "small.zip")
+        .await
+        .unwrap();
     db.write(|conn| conn.execute_batch("CREATE TRIGGER fail_publish BEFORE INSERT ON documents BEGIN SELECT RAISE(ABORT, 'injected'); END;")).await.unwrap();
     assert!(
         ingest::publish_package(&db, &config, pid, HashMap::new())
@@ -260,16 +262,12 @@ async fn publish_failure_keeps_draft_and_removes_new_files() {
 #[tokio::test]
 async fn failed_import_rolls_back_files_and_database() {
     let (db, config, _tmp) = setup_test_env("import_rollback");
+    let fixture = common::small_package();
     db.write(|conn| conn.execute_batch("CREATE TRIGGER fail_import BEFORE INSERT ON audit_log BEGIN SELECT RAISE(ABORT, 'injected'); END;")).await.unwrap();
     assert!(
-        ingest::import_package(
-            &db,
-            &config,
-            Path::new("tests/fixtures/packages/small_v1.zip"),
-            "small.zip"
-        )
-        .await
-        .is_err()
+        ingest::import_package(&db, &config, fixture.path(), "small.zip")
+            .await
+            .is_err()
     );
     assert_eq!(db.get_counts().await.unwrap().packages, 0);
     assert_eq!(

@@ -492,7 +492,7 @@ pub async fn publish_package(
     }
 
     let zip_path = get_package_zip_path(config, &sha256);
-    let checked = validate_package_archive(&zip_path, config, true)
+    let mut checked = validate_package_archive(&zip_path, config, true)
         .map_err(|e| IngestError::Validation(e.to_string()))?;
 
     let overrides: HashMap<String, Value> = meta_overrides_raw
@@ -635,7 +635,7 @@ pub async fn publish_package(
     staged.copy(&checked.root.join("vectors.npy"), &final_vec)?;
 
     // 事务写入数据库
-    let docs = checked.documents.clone();
+    let docs = std::mem::take(&mut checked.documents);
     let num_docs = docs.len();
 
     db.write(move |conn| {

@@ -26,7 +26,7 @@ base64 = "0.22"
 rand = "0.8"
 
 # 数据库与本地存储
-rusqlite = { version = "0.33", features = ["bundled", "backup", "vtab"] }
+rusqlite = { version = "0.33", features = ["bundled", "backup", "vtab", "limits"] }
 
 # HTTP 客户端（与上游 Gemini / 硅基流动通信）
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "stream", "multipart"] }

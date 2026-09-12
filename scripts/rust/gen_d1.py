@@ -44,7 +44,7 @@ def sha256_bytes(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
-def synth_text(doc_index: int, chunk_count: int, rng: np.random.Generator) -> tuple[str, list[str]]:
+def synth_text(doc_index: int, chunk_count: int, rng: np.random.Generator) -> tuple[str, list[str], list[int]]:
     """生成 1 份文档正文与分块：每块 8~14 行，行长真实分布。"""
     lines_per_chunk = []
     chunks_text = []
@@ -99,7 +99,7 @@ def build_packages(total_docs: int, chunks_per_doc: int, dim: int, seed: int,
             blob = text.encode("utf-8")
             h = sha256_bytes(blob)
             sections = []
-            start = 1
+            start = 2  # Line 1 is the document title, not part of a chunk.
             for ci, n in enumerate(lines_per_chunk):
                 sections.append({"section_id": f"s{ci}", "title": f"第{ci + 1}节",
                                  "start_line": start, "end_line": start + n - 1})
@@ -111,7 +111,7 @@ def build_packages(total_docs: int, chunks_per_doc: int, dim: int, seed: int,
                 "domains": [{"tag": "学生事务" if doc_idx % 2 == 0 else "安全纪律", "section_ids": []}],
                 "replaces": None, "notes": "", "line_count": text.count("\n"), "page_map": None,
                 "sections": sections, "text_sha256": h,
-                "chunks": [{"chunk_id": ci, "vector_index": ci, "text": t,
+                "chunks": [{"chunk_id": ci, "vector_index": len(vec_rows) + ci, "text": t,
                             "line_start": s["start_line"], "line_end": s["end_line"],
                             "section_id": s["section_id"]}
                            for ci, (t, s) in enumerate(zip(chunks_text, sections))],

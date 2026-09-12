@@ -17,7 +17,7 @@ use serde_json::json;
 use std::collections::HashMap;
 use std::convert::Infallible;
 use std::fs::File;
-use std::io::{BufRead, BufReader, Write};
+use std::io::{Read, Write};
 use std::sync::Arc;
 use std::time::Duration;
 use sysinfo::{Pid, ProcessesToUpdate, System};
@@ -83,7 +83,7 @@ pub struct LoginRequest {
 pub async fn login(
     State(state): State<AppState>,
     peer: Option<axum::Extension<axum::extract::ConnectInfo<std::net::SocketAddr>>>,
-    Json(body): Json<LoginRequest>,
+    super::error::RequestJson(body): super::error::RequestJson<LoginRequest>,
 ) -> ApiResult<Json<serde_json::Value>> {
     let ip = get_client_ip(peer);
     let key = format!("login:{}", ip);
@@ -128,7 +128,7 @@ pub struct AdminLoginRequest {
 pub async fn admin_login(
     State(state): State<AppState>,
     peer: Option<axum::Extension<axum::extract::ConnectInfo<std::net::SocketAddr>>>,
-    Json(body): Json<AdminLoginRequest>,
+    super::error::RequestJson(body): super::error::RequestJson<AdminLoginRequest>,
 ) -> ApiResult<Json<serde_json::Value>> {
     let ip = get_client_ip(peer);
     let key = format!("adminlogin:{}", ip);
@@ -176,7 +176,7 @@ pub struct AdminPasswordRequest {
 pub async fn admin_password(
     State(state): State<AppState>,
     headers: HeaderMap,
-    Json(body): Json<AdminPasswordRequest>,
+    super::error::RequestJson(body): super::error::RequestJson<AdminPasswordRequest>,
 ) -> ApiResult<Json<serde_json::Value>> {
     require_admin(&headers, &state)?;
 
@@ -262,7 +262,7 @@ pub async fn source_text(
         .ok_or_else(|| ApiError::not_found("资料不存在"))?;
 
     let frm = query.frm.max(1);
-    let max_allowed_to = frm + 200;
+    let max_allowed_to = frm.saturating_add(200);
     let clamped_to = query.to.max(frm).min(max_allowed_to).min(doc.line_count);
 
     let text_path = state
@@ -271,20 +271,18 @@ pub async fn source_text(
         .join("text")
         .join(format!("{}.txt", doc.doc_hash));
 
-    let file = File::open(&text_path).map_err(|_| ApiError::not_found("标准化原文缺失"))?;
-    let reader = BufReader::new(file);
-
-    let mut lines = Vec::new();
-    for (line_no, line_res) in reader.lines().enumerate() {
-        let current_line = (line_no + 1) as i64;
-        if current_line > clamped_to {
-            break;
-        }
-        if current_line >= frm {
-            let content = line_res.unwrap_or_default();
-            lines.push(format!("L{}: {}", current_line, content));
-        }
-    }
+    let contents = crate::text::read_lines(text_path, frm, clamped_to)
+        .await
+        .map_err(|error| match error.kind() {
+            std::io::ErrorKind::NotFound => ApiError::not_found("标准化原文缺失"),
+            std::io::ErrorKind::WouldBlock => ApiError::service_unavailable("原文读取繁忙，请重试"),
+            _ => ApiError::internal("原文损坏或窗口过大，请缩小行号范围或下载原文件"),
+        })?;
+    let lines: Vec<String> = contents
+        .into_iter()
+        .enumerate()
+        .map(|(index, content)| format!("L{}: {}", frm.saturating_add(index as i64), content))
+        .collect();
 
     Ok(Json(json!({
         "doc_uid": doc_uid,
@@ -398,7 +396,7 @@ pub struct ChatMessage {
     pub text: String,
 }
 
-#[derive(Deserialize, Default)]
+#[derive(Deserialize)]
 pub struct ScopeSpec {
     #[serde(default = "default_scope_mode")]
     pub mode: String,
@@ -410,6 +408,18 @@ pub struct ScopeSpec {
     pub year_mode: String,
     #[serde(default)]
     pub expand_confirmed: bool,
+}
+
+impl Default for ScopeSpec {
+    fn default() -> Self {
+        Self {
+            mode: default_scope_mode(),
+            domains: Vec::new(),
+            doc_uids: Vec::new(),
+            year_mode: default_year_mode(),
+            expand_confirmed: false,
+        }
+    }
 }
 
 fn default_scope_mode() -> String {
@@ -434,6 +444,21 @@ async fn build_turn_scope(
     db: &crate::db::DbPool,
     scope: &ScopeSpec,
 ) -> Result<(TurnScope, String), ApiError> {
+    if !matches!(scope.mode.as_str(), "auto" | "files" | "domains")
+        || !matches!(scope.year_mode.as_str(), "current" | "past")
+    {
+        return Err(ApiError::bad_request("无效的范围模式或年份模式"));
+    }
+    if scope.domains.len() > 32
+        || scope.doc_uids.len() > 128
+        || scope
+            .domains
+            .iter()
+            .chain(&scope.doc_uids)
+            .any(|v| v.is_empty() || v.len() > 256)
+    {
+        return Err(ApiError::bad_request("领域或文件限制过多、过长或为空"));
+    }
     let mut note = String::new();
     if scope.mode == "files" && !scope.expand_confirmed {
         if scope.doc_uids.is_empty() {
@@ -497,7 +522,7 @@ async fn build_turn_scope(
 pub async fn chat(
     State(state): State<AppState>,
     headers: HeaderMap,
-    Json(body): Json<ChatBody>,
+    super::error::RequestJson(body): super::error::RequestJson<ChatBody>,
 ) -> ApiResult<Response> {
     let client_id = require_user(&headers, &state)?;
 
@@ -505,6 +530,13 @@ pub async fn chat(
         return Err(ApiError::bad_request("问题长度必须在 1-4000 字符之间"));
     }
 
+    if body
+        .messages
+        .iter()
+        .any(|message| !matches!(message.role.as_str(), "user" | "model"))
+    {
+        return Err(ApiError::bad_request("历史消息 role 只能是 user 或 model"));
+    }
     let key = format!("chat:{}", client_id);
     if !state.limiter.hit(&key, 30.0, 20.0, 1.0) {
         return Err(ApiError::rate_limited("请求过于频繁，请稍后再试"));
@@ -633,7 +665,7 @@ pub struct CancelBody {
 pub async fn chat_cancel(
     State(state): State<AppState>,
     headers: HeaderMap,
-    Json(body): Json<CancelBody>,
+    super::error::RequestJson(body): super::error::RequestJson<CancelBody>,
 ) -> ApiResult<Json<serde_json::Value>> {
     let client_id = require_user(&headers, &state)?;
     let ok = state.chats.cancel(&body.request_id, &client_id).await;
@@ -689,7 +721,7 @@ pub struct SetAccessCodeRequest {
 pub async fn admin_set_access_code(
     State(state): State<AppState>,
     headers: HeaderMap,
-    Json(body): Json<SetAccessCodeRequest>,
+    super::error::RequestJson(body): super::error::RequestJson<SetAccessCodeRequest>,
 ) -> ApiResult<Json<serde_json::Value>> {
     require_admin(&headers, &state)?;
 
@@ -948,7 +980,7 @@ pub async fn admin_package_patch_meta(
     State(state): State<AppState>,
     headers: HeaderMap,
     Path((package_id, doc_hash)): Path<(i64, String)>,
-    Json(body): Json<PatchMetaRequest>,
+    super::error::RequestJson(body): super::error::RequestJson<PatchMetaRequest>,
 ) -> ApiResult<Json<serde_json::Value>> {
     require_admin(&headers, &state)?;
 
@@ -970,7 +1002,7 @@ pub async fn admin_package_publish(
     State(state): State<AppState>,
     headers: HeaderMap,
     Path(package_id): Path<i64>,
-    Json(body): Json<PublishPackageRequest>,
+    super::error::RequestJson(body): super::error::RequestJson<PublishPackageRequest>,
 ) -> ApiResult<Json<serde_json::Value>> {
     require_admin(&headers, &state)?;
 
@@ -1185,8 +1217,15 @@ pub async fn admin_restore(
             }
             let mut out = File::create(&dest)
                 .map_err(|e| ApiError::internal(format!("创建目标文件失败: {}", e)))?;
-            std::io::copy(&mut zfile, &mut out)
+            let limit = record
+                .size
+                .checked_add(1)
+                .ok_or_else(|| ApiError::bad_request("备份文件大小溢出"))?;
+            let written = std::io::copy(&mut (&mut zfile).take(limit), &mut out)
                 .map_err(|e| ApiError::internal(format!("解压文件失败: {}", e)))?;
+            if written != record.size {
+                return Err(ApiError::bad_request("备份文件实际解压大小与清单不一致"));
+            }
             out.flush()
                 .map_err(|e| ApiError::internal(format!("刷新目标文件失败: {}", e)))?;
             let actual_hash = crate::storage::hash_file(&dest)
@@ -1247,7 +1286,8 @@ pub async fn admin_restore(
         Ok(counts) => {
             // 刷新 token_secret
             if let Ok(Some(sec)) = state.db.setting_get("token_secret".to_string()).await
-                && let Ok(new_tokens) = crate::auth::TokenService::from_hex_secret(&sec, 30)
+                && let Ok(new_tokens) =
+                    crate::auth::TokenService::from_hex_secret(&sec, state.config.token_ttl_days)
             {
                 let mut lock = state.tokens.write().await;
                 *lock = new_tokens;

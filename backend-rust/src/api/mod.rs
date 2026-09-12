@@ -57,7 +57,9 @@ async fn maintenance_middleware(
     let limit = if path == "/admin/restore" {
         10u64 * 1024 * 1024 * 1024
     } else if path == "/admin/packages" && req.method() == axum::http::Method::POST {
-        210 * 1024 * 1024
+        (state.config.max_upload_body_mb as u64)
+            .saturating_mul(1024 * 1024)
+            .min(210 * 1024 * 1024)
     } else {
         256 * 1024
     };
