@@ -1,0 +1,34 @@
+name: Audit offline toolchain
+on:
+  push:
+    branches: [rust-audit-tooling-20260913]
+permissions:
+  contents: read
+jobs:
+  tooling:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Fetch locked public dependencies
+        working-directory: backend-rust
+        run: |
+          rustup show active-toolchain
+          cargo fetch --locked
+          rustup component add rustfmt clippy
+      - name: Archive compiler and registry only
+        working-directory: backend-rust
+        run: |
+          toolchain=$(dirname "$(dirname "$(rustup which rustc)")")
+          tar -C "$toolchain" -czf ../rust-toolchain.tar.gz bin lib --exclude='lib/rustlib/src' --exclude='lib/rustlib/rustc-src' || [ $? -eq 1 ]
+          tar -C "$HOME/.cargo" -czf ../rust-registry.tar.gz registry
+          rustc -Vv > ../rust-version.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: offline-rust-verification-environment
+          path: |
+            rust-toolchain.tar.gz
+            rust-registry.tar.gz
+            rust-version.txt
+          compression-level: 0
+          retention-days: 1
